@@ -28,6 +28,34 @@ supabase_storage_url() {
   printf '%s/storage/v1/object/%s/%s' "${SUPABASE_URL%/}" "$bucket" "$object_path"
 }
 
+supabase_bucket_url() {
+  printf '%s/storage/v1/bucket/%s' "${SUPABASE_URL%/}" "${SUPABASE_STORAGE_BUCKET}"
+}
+
+ensure_supabase_bucket() {
+  if curl -fsS \
+    -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
+    -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
+    "$(supabase_bucket_url)" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  bucket="${SUPABASE_STORAGE_BUCKET}"
+  if printf '{"id":"%s","name":"%s","public":false}' "$bucket" "$bucket" | curl -fsS \
+    -X POST \
+    -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
+    -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
+    -H "Content-Type: application/json" \
+    --data-binary @- \
+    "${SUPABASE_URL%/}/storage/v1/bucket" >/dev/null; then
+    echo "Created private Supabase Storage bucket: ${bucket}"
+    return 0
+  fi
+
+  echo "Failed to verify or create Supabase Storage bucket: ${bucket}" >&2
+  return 1
+}
+
 wait_for_sub_store() {
   timeout="${SUB_STORE_BACKUP_WAIT_SECONDS:-60}"
   i=0
@@ -45,6 +73,7 @@ wait_for_sub_store() {
 restore_from_supabase() {
   [ "${SUPABASE_RESTORE_ON_START:-true}" = "true" ] || return 0
   wait_for_sub_store || return 0
+  ensure_supabase_bucket || return 0
 
   tmp_file="/tmp/sub-store-supabase-restore.json"
   if curl -fsS \
@@ -74,6 +103,7 @@ restore_from_supabase() {
 
 backup_to_supabase_once() {
   wait_for_sub_store || return 0
+  ensure_supabase_bucket || return 0
 
   tmp_file="/tmp/sub-store-supabase-backup.json"
   if ! curl -fsS "${SUB_STORE_INTERNAL_API_BASE}/api/storage" -o "$tmp_file"; then

@@ -44,9 +44,9 @@ The image downloads the latest Sub-Store frontend and backend release artifacts 
 
 ## Supabase Storage backup
 
-Northflank persistent volumes are paid storage, so this image can use Supabase Storage as an external backup target instead. It is not a POSIX container volume; the container starts Sub-Store, restores `storage.json` from Supabase Storage when present, then periodically exports `/api/storage` and uploads it back with upsert enabled.
+Northflank persistent volumes are paid storage, so this image can use Supabase Storage as an external backup target instead. It is not a POSIX container volume; the container starts Sub-Store, verifies or creates a private Supabase Storage bucket, restores `storage.json` when present, then periodically exports `/api/storage` and uploads it back with upsert enabled.
 
-Create a private Supabase Storage bucket, then set:
+Create a Supabase project, then set:
 
 ```env
 SUPABASE_BACKUP_ENABLED=true
