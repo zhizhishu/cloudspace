@@ -32,9 +32,10 @@ RUN mkdir -p /opt/app/http-meta/meta \
 
 FROM node:20-alpine
 
-RUN apk add --no-cache procps
+RUN apk add --no-cache ca-certificates curl procps tzdata
 
 ENV NODE_ENV=production \
+    TZ=Asia/Shanghai \
     PORT=3000 \
     SUB_STORE_BACKEND_API_HOST=0.0.0.0 \
     SUB_STORE_BACKEND_API_PORT=3000 \

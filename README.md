@@ -25,11 +25,38 @@ The image downloads the latest Sub-Store frontend and backend release artifacts 
 | `SUB_STORE_FRONTEND_BACKEND_PATH` | `/2cXaAxRGfddmGz2yx1wA` |
 | `SUB_STORE_FRONTEND_PATH` | `/opt/app/frontend` |
 | `SUB_STORE_DATA_BASE_PATH` | `/opt/app/data` |
+| `SUB_STORE_INTERNAL_API_BASE` | `http://127.0.0.1:$SUB_STORE_BACKEND_API_PORT$SUB_STORE_FRONTEND_BACKEND_PATH` |
 | `HTTP_META_ENABLED` | `true` |
 | `HTTP_META_HOST` | `127.0.0.1` |
 | `HTTP_META_PORT` | `9876` |
 | `HTTP_META_FOLDER` | `/opt/app/http-meta/meta` |
 | `HTTP_META_TEMP_FOLDER` | `/tmp/http-meta` |
+| `SUPABASE_BACKUP_ENABLED` | `false` |
+| `SUPABASE_URL` | empty |
+| `SUPABASE_SERVICE_ROLE_KEY` | empty |
+| `SUPABASE_STORAGE_BUCKET` | empty |
+| `SUPABASE_STORAGE_OBJECT` | `sub-store/storage.json` |
+| `SUPABASE_RESTORE_ON_START` | `true` |
+| `SUPABASE_BACKUP_INTERVAL_SECONDS` | `300` |
+| `SUPABASE_BACKUP_INITIAL_DELAY_SECONDS` | `60` |
+| `SUPABASE_BACKUP_MIN_BYTES` | `200` |
+| `SUPABASE_BACKUP_ALLOW_EMPTY` | `false` |
+
+## Supabase Storage backup
+
+Northflank persistent volumes are paid storage, so this image can use Supabase Storage as an external backup target instead. It is not a POSIX container volume; the container starts Sub-Store, restores `storage.json` from Supabase Storage when present, then periodically exports `/api/storage` and uploads it back with upsert enabled.
+
+Create a private Supabase Storage bucket, then set:
+
+```env
+SUPABASE_BACKUP_ENABLED=true
+SUPABASE_URL=https://<project-ref>.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=<server-side service role key>
+SUPABASE_STORAGE_BUCKET=sub-store
+SUPABASE_STORAGE_OBJECT=sub-store/storage.json
+```
+
+Keep `SUPABASE_SERVICE_ROLE_KEY` only in Northflank runtime environment secrets. Do not expose it in the frontend or commit it to Git.
 
 ## Local build
 
