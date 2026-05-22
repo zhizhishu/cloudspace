@@ -44,7 +44,7 @@ The intended source repository is:
 https://github.com/zhizhishu/sub-store
 ```
 
-If a container image is published from this repository, the expected image name is:
+Published container image:
 
 ```text
 ghcr.io/zhizhishu/sub-store:latest
