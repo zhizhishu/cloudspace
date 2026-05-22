@@ -1,5 +1,8 @@
 FROM node:20-alpine AS fetcher
 
+ARG HTTP_META_VERSION=1.1.0
+ARG MIHOMO_VERSION=v1.19.25
+
 RUN apk add --no-cache ca-certificates curl unzip
 
 WORKDIR /opt/app
@@ -16,7 +19,20 @@ RUN mkdir -p /opt/app/frontend /opt/app/data \
     && curl -fsSL -o /opt/app/sub-store.bundle.js \
         https://github.com/sub-store-org/Sub-Store/releases/latest/download/sub-store.bundle.js
 
+RUN mkdir -p /opt/app/http-meta/meta \
+    && curl -fsSL -o /opt/app/http-meta/http-meta.bundle.js \
+        "https://github.com/xream/http-meta/releases/download/${HTTP_META_VERSION}/http-meta.bundle.js" \
+    && curl -fsSL -o /opt/app/http-meta/meta/tpl.yaml \
+        "https://github.com/xream/http-meta/releases/download/${HTTP_META_VERSION}/tpl.yaml" \
+    && curl -fsSL -o /tmp/mihomo.gz \
+        "https://github.com/MetaCubeX/mihomo/releases/download/${MIHOMO_VERSION}/mihomo-linux-amd64-compatible-${MIHOMO_VERSION}.gz" \
+    && gunzip -c /tmp/mihomo.gz > /opt/app/http-meta/meta/http-meta \
+    && chmod +x /opt/app/http-meta/meta/http-meta \
+    && rm -f /tmp/mihomo.gz
+
 FROM node:20-alpine
+
+RUN apk add --no-cache procps
 
 ENV NODE_ENV=production \
     PORT=3000 \
@@ -25,7 +41,13 @@ ENV NODE_ENV=production \
     SUB_STORE_BACKEND_MERGE=true \
     SUB_STORE_FRONTEND_BACKEND_PATH=/2cXaAxRGfddmGz2yx1wA \
     SUB_STORE_FRONTEND_PATH=/opt/app/frontend \
-    SUB_STORE_DATA_BASE_PATH=/opt/app/data
+    SUB_STORE_DATA_BASE_PATH=/opt/app/data \
+    HTTP_META_ENABLED=true \
+    HTTP_META_HOST=127.0.0.1 \
+    HTTP_META_PORT=9876 \
+    HTTP_META_START_DELAY_SECONDS=2 \
+    HTTP_META_FOLDER=/opt/app/http-meta/meta \
+    HTTP_META_TEMP_FOLDER=/tmp/http-meta
 
 WORKDIR /opt/app
 

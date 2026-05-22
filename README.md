@@ -13,6 +13,7 @@ The image downloads the latest Sub-Store frontend and backend release artifacts 
 - Frontend path: `/opt/app/frontend`.
 - Backend path: `/2cXaAxRGfddmGz2yx1wA`.
 - Container listen host: `0.0.0.0`, so Northflank can route traffic into the container.
+- HTTP META: enabled by default on internal `127.0.0.1:9876` for Sub-Store Node.js script operations.
 
 ## Environment variables
 
@@ -24,6 +25,11 @@ The image downloads the latest Sub-Store frontend and backend release artifacts 
 | `SUB_STORE_FRONTEND_BACKEND_PATH` | `/2cXaAxRGfddmGz2yx1wA` |
 | `SUB_STORE_FRONTEND_PATH` | `/opt/app/frontend` |
 | `SUB_STORE_DATA_BASE_PATH` | `/opt/app/data` |
+| `HTTP_META_ENABLED` | `true` |
+| `HTTP_META_HOST` | `127.0.0.1` |
+| `HTTP_META_PORT` | `9876` |
+| `HTTP_META_FOLDER` | `/opt/app/http-meta/meta` |
+| `HTTP_META_TEMP_FOLDER` | `/tmp/http-meta` |
 
 ## Local build
 
@@ -33,6 +39,22 @@ docker run --rm -p 3000:3000 sub-store
 ```
 
 Open `http://localhost:3000/`.
+
+## Sub-Store Node.js availability script
+
+This image includes HTTP META and the mihomo core, so the Node.js version of the Sub-Store availability script can use the default internal endpoint:
+
+```text
+http_meta_protocol=http
+http_meta_host=127.0.0.1
+http_meta_port=9876
+```
+
+Example script link:
+
+```text
+https://raw.githubusercontent.com/xream/scripts/main/surge/modules/sub-store-scripts/check/http_meta_availability.js#show_latency=true&keep_incompatible=true&status=204&url=http%3A%2F%2Fconnectivitycheck.platform.hicloud.com%2Fgenerate_204&timeout=1000&retries=1&retry_delay=1000&concurrency=10&http_meta_protocol=http&http_meta_host=127.0.0.1&http_meta_port=9876&http_meta_start_delay=3000&http_meta_proxy_timeout=10000
+```
 
 ## Northflank
 
