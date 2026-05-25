@@ -25,12 +25,16 @@ The image downloads the latest Sub-Store frontend and backend release artifacts 
 | `SUB_STORE_FRONTEND_BACKEND_PATH` | `/2cXaAxRGfddmGz2yx1wA` |
 | `SUB_STORE_FRONTEND_PATH` | `/opt/app/frontend` |
 | `SUB_STORE_DATA_BASE_PATH` | `/opt/app/data` |
+| `SUB_STORE_BODY_JSON_LIMIT` | `2mb` |
 | `SUB_STORE_INTERNAL_API_BASE` | `http://127.0.0.1:$SUB_STORE_BACKEND_API_PORT$SUB_STORE_FRONTEND_BACKEND_PATH` |
 | `HTTP_META_ENABLED` | `true` |
 | `HTTP_META_HOST` | `127.0.0.1` |
 | `HTTP_META_PORT` | `9876` |
 | `HTTP_META_FOLDER` | `/opt/app/http-meta/meta` |
 | `HTTP_META_TEMP_FOLDER` | `/tmp/http-meta` |
+| `HTTP_META_NODE_MAX_OLD_SPACE_SIZE` | `96` |
+| `HTTP_META_RESTART_DELAY_SECONDS` | `5` |
+| `SUB_STORE_NODE_MAX_OLD_SPACE_SIZE` | `256` |
 | `SUPABASE_BACKUP_ENABLED` | `false` |
 | `SUPABASE_URL` | empty |
 | `SUPABASE_SERVICE_ROLE_KEY` | empty |
@@ -40,7 +44,11 @@ The image downloads the latest Sub-Store frontend and backend release artifacts 
 | `SUPABASE_BACKUP_INTERVAL_SECONDS` | `300` |
 | `SUPABASE_BACKUP_INITIAL_DELAY_SECONDS` | `60` |
 | `SUPABASE_BACKUP_MIN_BYTES` | `200` |
+| `SUPABASE_BACKUP_MAX_BYTES` | `1048576` |
+| `SUPABASE_BACKUP_MIN_AVAILABLE_KB` | `131072` |
 | `SUPABASE_BACKUP_ALLOW_EMPTY` | `false` |
+| `CURL_CONNECT_TIMEOUT` | `10` |
+| `CURL_MAX_TIME` | `120` |
 
 ## Supabase Storage backup
 
@@ -57,6 +65,18 @@ SUPABASE_STORAGE_OBJECT=sub-store/storage.json
 ```
 
 Keep `SUPABASE_SERVICE_ROLE_KEY` only in Northflank runtime environment secrets. Do not expose it in the frontend or commit it to Git.
+
+## Memory safeguards
+
+Northflank free resources are small, so this image keeps the wrapper conservative:
+
+- Sub-Store and HTTP META get separate Node heap limits by default.
+- HTTP META is restarted by the wrapper if it exits after a heavy check.
+- Supabase restore no longer stores the base64 backup payload in a shell variable.
+- Supabase backup and restore skip payloads above `SUPABASE_BACKUP_MAX_BYTES`. The default stays below the `SUB_STORE_BODY_JSON_LIMIT` restore path after base64 expansion.
+- Periodic backups are skipped when `MemAvailable` is below `SUPABASE_BACKUP_MIN_AVAILABLE_KB`.
+
+These safeguards do not change Sub-Store's own subscription or script behavior, but they reduce wrapper-level memory spikes and avoid running large backup work while the service is already under memory pressure.
 
 ## Local build
 
