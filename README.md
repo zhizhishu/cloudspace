@@ -49,6 +49,7 @@ The image downloads the latest Sub-Store frontend and backend release artifacts 
 | `SUPABASE_BACKUP_INITIAL_DELAY_SECONDS` | `60` |
 | `SUPABASE_BACKUP_MIN_BYTES` | `200` |
 | `SUPABASE_BACKUP_ALLOW_EMPTY` | `false` |
+| `SUPABASE_STATE_FILE_MAX_BYTES` | `262144` |
 
 ## Supabase Storage backup
 
@@ -57,7 +58,7 @@ Northflank persistent volumes are paid storage, so this image can use Supabase S
 The state bundle stores:
 
 - Sub-Store's server-side `/api/storage` export.
-- The access-lock config file from `/opt/app/data/access-lock.json`.
+- Small state files from `/opt/app/data`, including Sub-Store's own GitHub restore/sync config and the access-lock config file.
 
 Browser-local OAuth sessions, browser localStorage, and GitHub website login cookies are not server-side Sub-Store data. Those cannot be restored by Supabase on another browser. The access lock avoids relying on a browser's GitHub login for basic private access.
 

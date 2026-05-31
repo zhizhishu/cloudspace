@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 
 const mode = process.argv[2];
+const maxDataFileBytes = Number(process.env.SUPABASE_STATE_FILE_MAX_BYTES || 262144);
 
 function readJson(file) {
   return JSON.parse(fs.readFileSync(file, "utf8"));
@@ -22,6 +23,71 @@ function safeWriteDataFile(dataDir, name, value) {
   writeJson(resolved, value);
 }
 
+function safeWriteRawDataFile(dataDir, name, content) {
+  const file = path.join(dataDir, name);
+  const resolved = path.resolve(file);
+  const root = path.resolve(dataDir);
+  if (!resolved.startsWith(`${root}${path.sep}`)) {
+    throw new Error(`Refusing to write outside data dir: ${name}`);
+  }
+  fs.mkdirSync(path.dirname(resolved), { recursive: true });
+  fs.writeFileSync(resolved, content);
+}
+
+function shouldSkipDataFile(relativePath) {
+  const normalized = relativePath.split(path.sep).join("/");
+  const parts = normalized.split("/");
+  if (parts.some((part) => ["cache", "logs", "tmp", "temp"].includes(part.toLowerCase()))) {
+    return true;
+  }
+  return /\.(log|tmp|bak|swp)$/i.test(normalized);
+}
+
+function walkFiles(dir, root = dir, out = []) {
+  if (!fs.existsSync(dir)) return out;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const fullPath = path.join(dir, entry.name);
+    const relativePath = path.relative(root, fullPath);
+    if (shouldSkipDataFile(relativePath)) continue;
+    if (entry.isDirectory()) {
+      walkFiles(fullPath, root, out);
+    } else if (entry.isFile()) {
+      out.push(fullPath);
+    }
+  }
+  return out;
+}
+
+function packDataFiles(dataDir) {
+  const root = path.resolve(dataDir);
+  const files = {};
+  for (const file of walkFiles(root)) {
+    const stat = fs.statSync(file);
+    if (stat.size > maxDataFileBytes) {
+      console.log(`Skipping data file above ${maxDataFileBytes} bytes: ${path.relative(root, file)}`);
+      continue;
+    }
+    const relativePath = path.relative(root, file).split(path.sep).join("/");
+    files[relativePath] = {
+      encoding: "base64",
+      size: stat.size,
+      content: fs.readFileSync(file).toString("base64")
+    };
+  }
+  return files;
+}
+
+function restoreDataFiles(dataDir, files) {
+  if (!files || typeof files !== "object") return 0;
+  let count = 0;
+  for (const [relativePath, file] of Object.entries(files)) {
+    if (!file || file.encoding !== "base64" || typeof file.content !== "string") continue;
+    safeWriteRawDataFile(dataDir, relativePath, Buffer.from(file.content, "base64"));
+    count += 1;
+  }
+  return count;
+}
+
 function restore(inputFile, dataDir, storageOutFile) {
   const raw = fs.readFileSync(inputFile, "utf8");
   const parsed = JSON.parse(raw);
@@ -36,25 +102,31 @@ function restore(inputFile, dataDir, storageOutFile) {
     return;
   }
 
+  if (parsed && parsed.version === 3 && Object.prototype.hasOwnProperty.call(parsed, "subStoreStorage")) {
+    writeJson(storageOutFile, parsed.subStoreStorage);
+    const restoredFiles = restoreDataFiles(dataDir, parsed.dataFiles);
+    if (restoredFiles > 0) {
+      console.log(`Restored ${restoredFiles} Sub-Store data files from Supabase state bundle`);
+    }
+    console.log("Restored Sub-Store storage from Supabase state bundle");
+    return;
+  }
+
   fs.writeFileSync(storageOutFile, raw.endsWith("\n") ? raw : `${raw}\n`);
   console.log("Restored legacy raw Sub-Store storage from Supabase state");
 }
 
 function backup(storageFile, dataDir, outputFile) {
   const subStoreStorage = readJson(storageFile);
-  const files = {};
-  const lockFile = path.join(dataDir, "access-lock.json");
-  if (fs.existsSync(lockFile)) {
-    files.accessLock = readJson(lockFile);
-  }
+  const dataFiles = packDataFiles(dataDir);
 
   writeJson(outputFile, {
-    version: 2,
+    version: 3,
     createdAt: new Date().toISOString(),
     subStoreStorage,
-    files
+    dataFiles
   });
-  console.log("Packed Sub-Store state bundle");
+  console.log(`Packed Sub-Store state bundle with ${Object.keys(dataFiles).length} data files`);
 }
 
 try {
