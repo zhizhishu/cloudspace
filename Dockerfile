@@ -37,31 +37,30 @@ RUN apk add --no-cache ca-certificates curl procps tzdata
 ENV NODE_ENV=production \
     TZ=Asia/Shanghai \
     PORT=3000 \
-    SUB_STORE_BACKEND_API_HOST=0.0.0.0 \
-    SUB_STORE_BACKEND_API_PORT=3000 \
+    ACCESS_LOCK_ENABLED=true \
+    ACCESS_LOCK_PORT=3000 \
+    ACCESS_LOCK_DATA_PATH=/opt/app/data/access-lock.json \
+    SUB_STORE_UPSTREAM_HOST=127.0.0.1 \
+    SUB_STORE_UPSTREAM_PORT=3001 \
+    SUB_STORE_BACKEND_API_HOST=127.0.0.1 \
+    SUB_STORE_BACKEND_API_PORT=3001 \
     SUB_STORE_BACKEND_MERGE=true \
     SUB_STORE_FRONTEND_BACKEND_PATH=/2cXaAxRGfddmGz2yx1wA \
     SUB_STORE_FRONTEND_PATH=/opt/app/frontend \
     SUB_STORE_DATA_BASE_PATH=/opt/app/data \
-    SUB_STORE_BODY_JSON_LIMIT=2mb \
     HTTP_META_ENABLED=true \
     HTTP_META_HOST=127.0.0.1 \
     HTTP_META_PORT=9876 \
     HTTP_META_START_DELAY_SECONDS=2 \
     HTTP_META_FOLDER=/opt/app/http-meta/meta \
-    HTTP_META_TEMP_FOLDER=/tmp/http-meta \
-    HTTP_META_NODE_MAX_OLD_SPACE_SIZE=96 \
-    HTTP_META_RESTART_DELAY_SECONDS=5 \
-    SUB_STORE_NODE_MAX_OLD_SPACE_SIZE=256 \
-    SUPABASE_BACKUP_MAX_BYTES=1048576 \
-    SUPABASE_BACKUP_MIN_AVAILABLE_KB=131072 \
-    CURL_CONNECT_TIMEOUT=10 \
-    CURL_MAX_TIME=120
+    HTTP_META_TEMP_FOLDER=/tmp/http-meta
 
 WORKDIR /opt/app
 
 COPY --from=fetcher /opt/app /opt/app
 COPY start.sh /usr/local/bin/start-sub-store
+COPY access-lock-proxy.js /opt/app/access-lock-proxy.js
+COPY supabase-state.js /opt/app/supabase-state.js
 
 RUN chmod +x /usr/local/bin/start-sub-store \
     && addgroup -S substore \

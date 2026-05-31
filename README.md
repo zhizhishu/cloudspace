@@ -4,37 +4,41 @@ Minimal Docker deployment for Sub-Store on Northflank.
 
 Repository: https://github.com/zhizhishu/sub-store
 
-The image downloads the latest Sub-Store frontend and backend release artifacts at build time, then runs the merged frontend/backend service on `0.0.0.0:$PORT`.
+The image downloads the latest Sub-Store frontend and backend release artifacts at build time. By default, Sub-Store runs as a merged frontend/backend service on an internal port, and a small access-lock proxy listens on `0.0.0.0:$PORT`.
 
 ## Runtime
 
-- Port: `3000` by default, or Northflank `PORT` when provided.
+- Public port: `3000` by default, or Northflank `PORT` when provided.
+- Internal Sub-Store port: `3001` by default.
 - Data path: `/opt/app/data`.
 - Frontend path: `/opt/app/frontend`.
 - Backend path: `/2cXaAxRGfddmGz2yx1wA`.
-- Container listen host: `0.0.0.0`, so Northflank can route traffic into the container.
+- Container listen host: the access-lock proxy listens on `0.0.0.0`; Sub-Store listens on `127.0.0.1`.
+- Access lock: enabled by default. The first start generates an initial password if `ACCESS_LOCK_INITIAL_PASSWORD` is not set, then stores a hashed config in `/opt/app/data/access-lock.json`. After login, open `/__lock` to change the password.
 - HTTP META: enabled by default on internal `127.0.0.1:9876` for Sub-Store Node.js script operations.
 
 ## Environment variables
 
 | Name | Default |
 | --- | --- |
-| `SUB_STORE_BACKEND_API_HOST` | `0.0.0.0` |
-| `SUB_STORE_BACKEND_API_PORT` | `$PORT` or `3000` |
+| `ACCESS_LOCK_ENABLED` | `true` |
+| `ACCESS_LOCK_PORT` | `$PORT` or `3000` |
+| `ACCESS_LOCK_DATA_PATH` | `/opt/app/data/access-lock.json` |
+| `ACCESS_LOCK_INITIAL_PASSWORD` | empty, generated on first start |
+| `SUB_STORE_UPSTREAM_HOST` | `127.0.0.1` |
+| `SUB_STORE_UPSTREAM_PORT` | `3001` |
+| `SUB_STORE_BACKEND_API_HOST` | `127.0.0.1` |
+| `SUB_STORE_BACKEND_API_PORT` | `3001` |
 | `SUB_STORE_BACKEND_MERGE` | `true` |
 | `SUB_STORE_FRONTEND_BACKEND_PATH` | `/2cXaAxRGfddmGz2yx1wA` |
 | `SUB_STORE_FRONTEND_PATH` | `/opt/app/frontend` |
 | `SUB_STORE_DATA_BASE_PATH` | `/opt/app/data` |
-| `SUB_STORE_BODY_JSON_LIMIT` | `2mb` |
 | `SUB_STORE_INTERNAL_API_BASE` | `http://127.0.0.1:$SUB_STORE_BACKEND_API_PORT$SUB_STORE_FRONTEND_BACKEND_PATH` |
 | `HTTP_META_ENABLED` | `true` |
 | `HTTP_META_HOST` | `127.0.0.1` |
 | `HTTP_META_PORT` | `9876` |
 | `HTTP_META_FOLDER` | `/opt/app/http-meta/meta` |
 | `HTTP_META_TEMP_FOLDER` | `/tmp/http-meta` |
-| `HTTP_META_NODE_MAX_OLD_SPACE_SIZE` | `96` |
-| `HTTP_META_RESTART_DELAY_SECONDS` | `5` |
-| `SUB_STORE_NODE_MAX_OLD_SPACE_SIZE` | `256` |
 | `SUPABASE_BACKUP_ENABLED` | `false` |
 | `SUPABASE_URL` | empty |
 | `SUPABASE_SERVICE_ROLE_KEY` | empty |
@@ -44,15 +48,18 @@ The image downloads the latest Sub-Store frontend and backend release artifacts 
 | `SUPABASE_BACKUP_INTERVAL_SECONDS` | `300` |
 | `SUPABASE_BACKUP_INITIAL_DELAY_SECONDS` | `60` |
 | `SUPABASE_BACKUP_MIN_BYTES` | `200` |
-| `SUPABASE_BACKUP_MAX_BYTES` | `1048576` |
-| `SUPABASE_BACKUP_MIN_AVAILABLE_KB` | `131072` |
 | `SUPABASE_BACKUP_ALLOW_EMPTY` | `false` |
-| `CURL_CONNECT_TIMEOUT` | `10` |
-| `CURL_MAX_TIME` | `120` |
 
 ## Supabase Storage backup
 
-Northflank persistent volumes are paid storage, so this image can use Supabase Storage as an external backup target instead. It is not a POSIX container volume; the container starts Sub-Store, verifies or creates a private Supabase Storage bucket, restores `storage.json` when present, then periodically exports `/api/storage` and uploads it back with upsert enabled.
+Northflank persistent volumes are paid storage, so this image can use Supabase Storage as an external backup target instead. It is not a POSIX container volume; the container starts Sub-Store, verifies or creates a private Supabase Storage bucket, restores `storage.json` when present, then periodically exports `/api/storage` and uploads a state bundle back with upsert enabled.
+
+The state bundle stores:
+
+- Sub-Store's server-side `/api/storage` export.
+- The access-lock config file from `/opt/app/data/access-lock.json`.
+
+Browser-local OAuth sessions, browser localStorage, and GitHub website login cookies are not server-side Sub-Store data. Those cannot be restored by Supabase on another browser. The access lock avoids relying on a browser's GitHub login for basic private access.
 
 Create a Supabase project, then set:
 
@@ -66,18 +73,6 @@ SUPABASE_STORAGE_OBJECT=sub-store/storage.json
 
 Keep `SUPABASE_SERVICE_ROLE_KEY` only in Northflank runtime environment secrets. Do not expose it in the frontend or commit it to Git.
 
-## Memory safeguards
-
-Northflank free resources are small, so this image keeps the wrapper conservative:
-
-- Sub-Store and HTTP META get separate Node heap limits by default.
-- HTTP META is restarted by the wrapper if it exits after a heavy check.
-- Supabase restore no longer stores the base64 backup payload in a shell variable.
-- Supabase backup and restore skip payloads above `SUPABASE_BACKUP_MAX_BYTES`. The default stays below the `SUB_STORE_BODY_JSON_LIMIT` restore path after base64 expansion.
-- Periodic backups are skipped when `MemAvailable` is below `SUPABASE_BACKUP_MIN_AVAILABLE_KB`.
-
-These safeguards do not change Sub-Store's own subscription or script behavior, but they reduce wrapper-level memory spikes and avoid running large backup work while the service is already under memory pressure.
-
 ## Local build
 
 ```bash
@@ -85,7 +80,7 @@ docker build -t sub-store .
 docker run --rm -p 3000:3000 sub-store
 ```
 
-Open `http://localhost:3000/`.
+Open `http://localhost:3000/`. The generated initial password is printed once in the container logs. After login, open `http://localhost:3000/__lock` to change it.
 
 ## Sub-Store Node.js availability script
 

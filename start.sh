@@ -1,62 +1,29 @@
 #!/bin/sh
 set -eu
 
-export SUB_STORE_BACKEND_API_HOST="${SUB_STORE_BACKEND_API_HOST:-0.0.0.0}"
-export SUB_STORE_BACKEND_API_PORT="${PORT:-${SUB_STORE_BACKEND_API_PORT:-3000}}"
+export ACCESS_LOCK_ENABLED="${ACCESS_LOCK_ENABLED:-true}"
+export ACCESS_LOCK_PORT="${PORT:-${ACCESS_LOCK_PORT:-3000}}"
+export SUB_STORE_UPSTREAM_HOST="${SUB_STORE_UPSTREAM_HOST:-127.0.0.1}"
+export SUB_STORE_UPSTREAM_PORT="${SUB_STORE_UPSTREAM_PORT:-3001}"
+
+if [ "$ACCESS_LOCK_ENABLED" = "true" ]; then
+  export SUB_STORE_BACKEND_API_HOST="${SUB_STORE_BACKEND_API_HOST:-127.0.0.1}"
+  export SUB_STORE_BACKEND_API_PORT="${SUB_STORE_BACKEND_API_PORT:-$SUB_STORE_UPSTREAM_PORT}"
+else
+  export SUB_STORE_BACKEND_API_HOST="${SUB_STORE_PUBLIC_HOST:-0.0.0.0}"
+  export SUB_STORE_BACKEND_API_PORT="${PORT:-${SUB_STORE_BACKEND_API_PORT:-3000}}"
+fi
+
 export SUB_STORE_BACKEND_MERGE="${SUB_STORE_BACKEND_MERGE:-true}"
 export SUB_STORE_FRONTEND_BACKEND_PATH="${SUB_STORE_FRONTEND_BACKEND_PATH:-/2cXaAxRGfddmGz2yx1wA}"
 export SUB_STORE_FRONTEND_PATH="${SUB_STORE_FRONTEND_PATH:-/opt/app/frontend}"
 export SUB_STORE_DATA_BASE_PATH="${SUB_STORE_DATA_BASE_PATH:-/opt/app/data}"
-export SUB_STORE_BODY_JSON_LIMIT="${SUB_STORE_BODY_JSON_LIMIT:-2mb}"
 export SUB_STORE_INTERNAL_API_BASE="${SUB_STORE_INTERNAL_API_BASE:-http://127.0.0.1:${SUB_STORE_BACKEND_API_PORT}${SUB_STORE_FRONTEND_BACKEND_PATH}}"
-export SUB_STORE_NODE_MAX_OLD_SPACE_SIZE="${SUB_STORE_NODE_MAX_OLD_SPACE_SIZE:-256}"
-export HTTP_META_NODE_MAX_OLD_SPACE_SIZE="${HTTP_META_NODE_MAX_OLD_SPACE_SIZE:-96}"
-export CURL_CONNECT_TIMEOUT="${CURL_CONNECT_TIMEOUT:-10}"
-export CURL_MAX_TIME="${CURL_MAX_TIME:-120}"
+export ACCESS_LOCK_UPSTREAM_HOST="${ACCESS_LOCK_UPSTREAM_HOST:-127.0.0.1}"
+export ACCESS_LOCK_UPSTREAM_PORT="${ACCESS_LOCK_UPSTREAM_PORT:-$SUB_STORE_BACKEND_API_PORT}"
+export ACCESS_LOCK_DATA_PATH="${ACCESS_LOCK_DATA_PATH:-$SUB_STORE_DATA_BASE_PATH/access-lock.json}"
 
 mkdir -p "$SUB_STORE_DATA_BASE_PATH"
-
-curl_with_limits() {
-  curl -fsS \
-    --connect-timeout "$CURL_CONNECT_TIMEOUT" \
-    --max-time "$CURL_MAX_TIME" \
-    "$@"
-}
-
-curl_to_file_with_limit() {
-  output_file="$1"
-  shift
-  max_bytes="${SUPABASE_BACKUP_MAX_BYTES:-1048576}"
-
-  if [ "$max_bytes" -gt 0 ] 2>/dev/null; then
-    curl_with_limits --max-filesize "$max_bytes" "$@" -o "$output_file"
-  else
-    curl_with_limits "$@" -o "$output_file"
-  fi
-}
-
-file_bytes() {
-  wc -c < "$1" | tr -d ' '
-}
-
-is_over_byte_limit() {
-  bytes="$1"
-  limit="$2"
-  [ "$limit" -gt 0 ] 2>/dev/null && [ "$bytes" -gt "$limit" ]
-}
-
-memory_guard_ok() {
-  min_kb="${SUPABASE_BACKUP_MIN_AVAILABLE_KB:-131072}"
-  [ "$min_kb" = "0" ] && return 0
-
-  available_kb="$(awk '/MemAvailable:/ { print $2; exit }' /proc/meminfo 2>/dev/null || true)"
-  if [ -n "$available_kb" ] && [ "$available_kb" -lt "$min_kb" ] 2>/dev/null; then
-    echo "Available memory is ${available_kb}KB; skipping Supabase backup below guard ${min_kb}KB"
-    return 1
-  fi
-
-  return 0
-}
 
 supabase_backup_enabled() {
   [ "${SUPABASE_BACKUP_ENABLED:-false}" = "true" ] \
@@ -80,7 +47,7 @@ supabase_bucket_url() {
 }
 
 ensure_supabase_bucket() {
-  if curl_with_limits \
+  if curl -fsS \
     -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
     -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
     "$(supabase_bucket_url)" >/dev/null 2>&1; then
@@ -88,7 +55,7 @@ ensure_supabase_bucket() {
   fi
 
   bucket="${SUPABASE_STORAGE_BUCKET}"
-  if printf '{"id":"%s","name":"%s","public":false}' "$bucket" "$bucket" | curl_with_limits \
+  if printf '{"id":"%s","name":"%s","public":false}' "$bucket" "$bucket" | curl -fsS \
     -X POST \
     -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
     -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
@@ -107,7 +74,7 @@ wait_for_sub_store() {
   timeout="${SUB_STORE_BACKUP_WAIT_SECONDS:-60}"
   i=0
   while [ "$i" -lt "$timeout" ]; do
-    if curl -fsS --connect-timeout 2 --max-time 5 "${SUB_STORE_INTERNAL_API_BASE}/api/utils/env" >/dev/null 2>&1; then
+    if curl -fsS "${SUB_STORE_INTERNAL_API_BASE}/api/utils/env" >/dev/null 2>&1; then
       return 0
     fi
     i=$((i + 1))
@@ -122,106 +89,84 @@ restore_from_supabase() {
   wait_for_sub_store || return 0
   ensure_supabase_bucket || return 0
 
-  tmp_file="/tmp/sub-store-supabase-restore.json"
-  if curl_to_file_with_limit "$tmp_file" \
+  tmp_state="/tmp/sub-store-supabase-state.json"
+  tmp_storage="/tmp/sub-store-supabase-storage.json"
+  if curl -fsS \
     -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
     -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
-    "$(supabase_storage_url)"; then
-    bytes="$(file_bytes "$tmp_file")"
-    if [ "$bytes" -lt "${SUPABASE_BACKUP_MIN_BYTES:-200}" ]; then
-      echo "Supabase backup is too small; skipping restore"
+    "$(supabase_storage_url)" \
+    -o "$tmp_state"; then
+    if ! node /opt/app/supabase-state.js restore "$tmp_state" "$SUB_STORE_DATA_BASE_PATH" "$tmp_storage"; then
+      echo "Failed to unpack Supabase state; starting with current local data" >&2
       return 0
     fi
 
-    if is_over_byte_limit "$bytes" "${SUPABASE_BACKUP_MAX_BYTES:-1048576}"; then
-      echo "Supabase backup is ${bytes} bytes; skipping restore above limit ${SUPABASE_BACKUP_MAX_BYTES:-1048576}"
+    if [ ! -s "$tmp_storage" ]; then
+      echo "Supabase state has no Sub-Store storage; skipping restore"
       return 0
     fi
 
-    if { printf '{"content":"'; base64 "$tmp_file" | tr -d '\n'; printf '"}'; } | curl_with_limits \
+    if [ "$(wc -c < "$tmp_storage" | tr -d ' ')" -lt "${SUPABASE_BACKUP_MIN_BYTES:-200}" ]; then
+      echo "Supabase backup is too small; skipping Sub-Store storage restore"
+      return 0
+    fi
+
+    if { printf '{"content":"'; base64 "$tmp_storage" | tr -d '\n'; printf '"}'; } | curl -fsS \
       -X POST \
       -H "Content-Type: application/json" \
       --data-binary @- \
       "${SUB_STORE_INTERNAL_API_BASE}/api/storage" >/dev/null; then
-      echo "Restored Sub-Store data from Supabase Storage"
+      echo "Restored Sub-Store data from Supabase state"
     else
-      echo "Failed to restore Sub-Store data from Supabase Storage" >&2
+      echo "Failed to restore Sub-Store data from Supabase state" >&2
     fi
   else
-    echo "No readable Supabase backup found; starting with current local data"
+    echo "No readable Supabase state found; starting with current local data"
   fi
 }
 
 backup_to_supabase_once() {
   wait_for_sub_store || return 0
   ensure_supabase_bucket || return 0
-  memory_guard_ok || return 0
 
-  tmp_file="/tmp/sub-store-supabase-backup.json"
-  if ! curl_to_file_with_limit "$tmp_file" "${SUB_STORE_INTERNAL_API_BASE}/api/storage"; then
-    echo "Failed to export Sub-Store storage for Supabase backup, or export exceeded ${SUPABASE_BACKUP_MAX_BYTES:-1048576} bytes" >&2
+  tmp_storage="/tmp/sub-store-supabase-storage.json"
+  tmp_state="/tmp/sub-store-supabase-state.json"
+  if ! curl -fsS "${SUB_STORE_INTERNAL_API_BASE}/api/storage" -o "$tmp_storage"; then
+    echo "Failed to export Sub-Store storage for Supabase backup" >&2
     return 0
   fi
 
-  bytes="$(file_bytes "$tmp_file")"
+  bytes="$(wc -c < "$tmp_storage" | tr -d ' ')"
   if [ "$bytes" -lt "${SUPABASE_BACKUP_MIN_BYTES:-200}" ] && [ "${SUPABASE_BACKUP_ALLOW_EMPTY:-false}" != "true" ]; then
     echo "Sub-Store export is ${bytes} bytes; skipping backup to avoid overwriting with empty data"
     return 0
   fi
 
-  if is_over_byte_limit "$bytes" "${SUPABASE_BACKUP_MAX_BYTES:-1048576}"; then
-    echo "Sub-Store export is ${bytes} bytes; skipping backup above limit ${SUPABASE_BACKUP_MAX_BYTES:-1048576}"
+  if ! node /opt/app/supabase-state.js backup "$tmp_storage" "$SUB_STORE_DATA_BASE_PATH" "$tmp_state"; then
+    echo "Failed to pack Supabase state" >&2
     return 0
   fi
 
-  new_hash="$(sha256sum "$tmp_file" | awk '{print $1}')"
+  new_hash="$(sha256sum "$tmp_state" | awk '{print $1}')"
   old_hash=""
   [ -f /tmp/sub-store-supabase-backup.sha256 ] && old_hash="$(cat /tmp/sub-store-supabase-backup.sha256)"
   if [ "$new_hash" = "$old_hash" ]; then
     return 0
   fi
 
-  if curl_with_limits \
+  if curl -fsS \
     -X POST \
     -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
     -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
     -H "x-upsert: true" \
     -H "Content-Type: application/json" \
-    --data-binary @"$tmp_file" \
+    --data-binary @"$tmp_state" \
     "$(supabase_storage_url)" >/dev/null; then
     printf '%s' "$new_hash" > /tmp/sub-store-supabase-backup.sha256
-    echo "Backed up Sub-Store data to Supabase Storage (${bytes} bytes)"
+    echo "Backed up Sub-Store state to Supabase Storage (${bytes} storage bytes)"
   else
-    echo "Failed to upload Sub-Store backup to Supabase Storage" >&2
+    echo "Failed to upload Sub-Store state to Supabase Storage" >&2
   fi
-}
-
-run_http_meta() {
-  child_pid=""
-
-  stop_http_meta() {
-    [ -n "$child_pid" ] && kill "$child_pid" 2>/dev/null || true
-    wait "$child_pid" 2>/dev/null || true
-    exit 0
-  }
-
-  trap stop_http_meta INT TERM
-
-  while true; do
-    META_TEMP_FOLDER="${HTTP_META_TEMP_FOLDER:-/tmp/http-meta}" \
-    META_FOLDER="${HTTP_META_FOLDER:-/opt/app/http-meta/meta}" \
-    HOST="${HTTP_META_HOST:-127.0.0.1}" \
-    PORT="${HTTP_META_PORT:-9876}" \
-    node --max-old-space-size="${HTTP_META_NODE_MAX_OLD_SPACE_SIZE}" /opt/app/http-meta/http-meta.bundle.js &
-
-    child_pid="$!"
-    wait "$child_pid" || status="$?"
-    status="${status:-0}"
-    echo "HTTP META exited with status ${status}; restarting in ${HTTP_META_RESTART_DELAY_SECONDS:-5}s" >&2
-    child_pid=""
-    status=""
-    sleep "${HTTP_META_RESTART_DELAY_SECONDS:-5}"
-  done
 }
 
 supabase_backup_loop() {
@@ -232,10 +177,16 @@ supabase_backup_loop() {
   done
 }
 
-if [ "${HTTP_META_ENABLED:-true}" = "true" ]; then
+start_http_meta() {
+  [ "${HTTP_META_ENABLED:-true}" = "true" ] || return 0
   mkdir -p "${HTTP_META_TEMP_FOLDER:-/tmp/http-meta}"
 
-  run_http_meta &
+  META_TEMP_FOLDER="${HTTP_META_TEMP_FOLDER:-/tmp/http-meta}" \
+  META_FOLDER="${HTTP_META_FOLDER:-/opt/app/http-meta/meta}" \
+  HOST="${HTTP_META_HOST:-127.0.0.1}" \
+  PORT="${HTTP_META_PORT:-9876}" \
+  node /opt/app/http-meta/http-meta.bundle.js &
+
   HTTP_META_PID="$!"
   sleep "${HTTP_META_START_DELAY_SECONDS:-2}"
 
@@ -245,27 +196,56 @@ if [ "${HTTP_META_ENABLED:-true}" = "true" ]; then
   fi
 
   echo "HTTP META listening on ${HTTP_META_HOST:-127.0.0.1}:${HTTP_META_PORT:-9876}"
-fi
+}
 
-if supabase_backup_enabled; then
-  node --max-old-space-size="${SUB_STORE_NODE_MAX_OLD_SPACE_SIZE}" /opt/app/sub-store.bundle.js &
+start_sub_store() {
+  node /opt/app/sub-store.bundle.js &
   SUB_STORE_PID="$!"
-  SUPABASE_BACKUP_PID=""
+}
 
-  stop_children() {
-    for pid in "$SUB_STORE_PID" "${SUPABASE_BACKUP_PID:-}" "${HTTP_META_PID:-}"; do
-      [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
-    done
-    wait "$SUB_STORE_PID" 2>/dev/null || true
-  }
-  trap stop_children INT TERM
+start_access_lock() {
+  [ "$ACCESS_LOCK_ENABLED" = "true" ] || return 0
+  node /opt/app/access-lock-proxy.js &
+  ACCESS_LOCK_PID="$!"
+  sleep 1
+  if ! kill -0 "$ACCESS_LOCK_PID" 2>/dev/null; then
+    echo "Access lock proxy failed to start" >&2
+    exit 1
+  fi
+  echo "Access lock proxy listening on 0.0.0.0:${ACCESS_LOCK_PORT}"
+}
 
-  restore_from_supabase
+stop_children() {
+  for pid in "${ACCESS_LOCK_PID:-}" "${SUPABASE_BACKUP_PID:-}" "${SUB_STORE_PID:-}" "${HTTP_META_PID:-}"; do
+    [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
+  done
+  wait "${ACCESS_LOCK_PID:-}" 2>/dev/null || true
+  wait "${SUB_STORE_PID:-}" 2>/dev/null || true
+}
+trap stop_children INT TERM
 
-  supabase_backup_loop &
-  SUPABASE_BACKUP_PID="$!"
+HTTP_META_PID=""
+SUB_STORE_PID=""
+SUPABASE_BACKUP_PID=""
+ACCESS_LOCK_PID=""
 
-  wait "$SUB_STORE_PID"
+start_http_meta
+
+if [ "$ACCESS_LOCK_ENABLED" = "true" ] || supabase_backup_enabled; then
+  start_sub_store
+
+  if supabase_backup_enabled; then
+    restore_from_supabase
+    supabase_backup_loop &
+    SUPABASE_BACKUP_PID="$!"
+  fi
+
+  if [ "$ACCESS_LOCK_ENABLED" = "true" ]; then
+    start_access_lock
+    wait "$ACCESS_LOCK_PID"
+  else
+    wait "$SUB_STORE_PID"
+  fi
 else
-  exec node --max-old-space-size="${SUB_STORE_NODE_MAX_OLD_SPACE_SIZE}" /opt/app/sub-store.bundle.js
+  exec node /opt/app/sub-store.bundle.js
 fi
