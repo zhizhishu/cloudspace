@@ -36,9 +36,9 @@ RUN apk add --no-cache ca-certificates curl procps tzdata
 
 ENV NODE_ENV=production \
     TZ=Asia/Shanghai \
-    PORT=3000 \
+    PORT=7860 \
     ACCESS_LOCK_ENABLED=true \
-    ACCESS_LOCK_PORT=3000 \
+    ACCESS_LOCK_PORT=7860 \
     ACCESS_LOCK_DATA_PATH=/opt/app/data/access-lock.json \
     SUB_STORE_UPSTREAM_HOST=127.0.0.1 \
     SUB_STORE_UPSTREAM_PORT=3001 \
@@ -69,7 +69,7 @@ RUN chmod +x /usr/local/bin/start-sub-store \
 
 USER substore
 
-EXPOSE 3000
+EXPOSE 7860
 VOLUME ["/opt/app/data"]
 
 CMD ["start-sub-store"]

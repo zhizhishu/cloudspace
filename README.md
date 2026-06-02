@@ -1,6 +1,15 @@
+---
+title: Sub-Store
+emoji: 📦
+colorFrom: green
+colorTo: gray
+sdk: docker
+app_port: 7860
+---
+
 # sub-store
 
-Minimal Docker deployment for Sub-Store on Northflank.
+Minimal Docker deployment for Sub-Store on Northflank and Hugging Face Spaces.
 
 Repository: https://github.com/zhizhishu/sub-store
 
@@ -8,7 +17,7 @@ The image downloads the latest Sub-Store frontend and backend release artifacts 
 
 ## Runtime
 
-- Public port: `3000` by default, or Northflank `PORT` when provided.
+- Public port: `7860` by default for Hugging Face Spaces, or platform `PORT` when provided.
 - Internal Sub-Store port: `3001` by default.
 - Data path: `/opt/app/data`.
 - Frontend path: `/opt/app/frontend`.
@@ -114,3 +123,14 @@ Published container image:
 ```text
 ghcr.io/zhizhishu/sub-store:latest
 ```
+
+## Hugging Face Spaces
+
+Create a Docker Space and push this repository to it. Hugging Face reads the Space configuration from the YAML block at the top of this README:
+
+```yaml
+sdk: docker
+app_port: 7860
+```
+
+Keep the same Supabase environment variables in Space secrets if you want Sub-Store server-side state to restore after restarts. Free Spaces have more memory than the current Northflank free container, but their default runtime disk is still ephemeral.
