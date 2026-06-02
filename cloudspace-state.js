@@ -95,38 +95,38 @@ function restore(inputFile, dataDir, storageOutFile) {
   if (parsed && parsed.version === 2 && Object.prototype.hasOwnProperty.call(parsed, "subStoreStorage")) {
     writeJson(storageOutFile, parsed.subStoreStorage);
     if (parsed.files && parsed.files.accessLock) {
-      safeWriteDataFile(dataDir, "access-lock.json", parsed.files.accessLock);
-      console.log("Restored access lock config from Supabase state");
+      safeWriteDataFile(dataDir, "cloudspace-access.json", parsed.files.accessLock);
+      console.log("Restored CloudSpace access config from Supabase state");
     }
-    console.log("Restored Sub-Store storage from Supabase state bundle");
+    console.log("Restored CloudSpace storage from Supabase state bundle");
     return;
   }
 
-  if (parsed && parsed.version === 3 && Object.prototype.hasOwnProperty.call(parsed, "subStoreStorage")) {
-    writeJson(storageOutFile, parsed.subStoreStorage);
+  if (parsed && parsed.version === 3 && (Object.prototype.hasOwnProperty.call(parsed, "cloudspaceStorage") || Object.prototype.hasOwnProperty.call(parsed, "subStoreStorage"))) {
+    writeJson(storageOutFile, parsed.cloudspaceStorage || parsed.subStoreStorage);
     const restoredFiles = restoreDataFiles(dataDir, parsed.dataFiles);
     if (restoredFiles > 0) {
-      console.log(`Restored ${restoredFiles} Sub-Store data files from Supabase state bundle`);
+      console.log(`Restored ${restoredFiles} CloudSpace data files from Supabase state bundle`);
     }
-    console.log("Restored Sub-Store storage from Supabase state bundle");
+    console.log("Restored CloudSpace storage from Supabase state bundle");
     return;
   }
 
   fs.writeFileSync(storageOutFile, raw.endsWith("\n") ? raw : `${raw}\n`);
-  console.log("Restored legacy raw Sub-Store storage from Supabase state");
+  console.log("Restored legacy raw CloudSpace storage from Supabase state");
 }
 
 function backup(storageFile, dataDir, outputFile) {
-  const subStoreStorage = readJson(storageFile);
+  const cloudspaceStorage = readJson(storageFile);
   const dataFiles = packDataFiles(dataDir);
 
   writeJson(outputFile, {
     version: 3,
     createdAt: new Date().toISOString(),
-    subStoreStorage,
+    cloudspaceStorage,
     dataFiles
   });
-  console.log(`Packed Sub-Store state bundle with ${Object.keys(dataFiles).length} data files`);
+  console.log(`Packed CloudSpace state bundle with ${Object.keys(dataFiles).length} data files`);
 }
 
 try {
@@ -135,7 +135,7 @@ try {
   } else if (mode === "backup") {
     backup(process.argv[3], process.argv[4], process.argv[5]);
   } else {
-    throw new Error("Usage: node supabase-state.js restore <input> <dataDir> <storageOut> | backup <storage> <dataDir> <output>");
+    throw new Error("Usage: node cloudspace-state.js restore <input> <dataDir> <storageOut> | backup <storage> <dataDir> <output>");
   }
 } catch (error) {
   console.error(error.message);

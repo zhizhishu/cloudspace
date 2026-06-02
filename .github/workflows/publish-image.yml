@@ -1,4 +1,4 @@
-name: Publish image
+name: Publish CloudSpace image
 
 on:
   push:
@@ -29,4 +29,4 @@ jobs:
         with:
           context: .
           push: true
-          tags: ghcr.io/zhizhishu/sub-store:latest
+          tags: ghcr.io/zhizhishu/cloudspace:latest

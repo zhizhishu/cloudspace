@@ -8,15 +8,15 @@ RUN apk add --no-cache ca-certificates curl unzip
 WORKDIR /opt/app
 
 RUN mkdir -p /opt/app/frontend /opt/app/data \
-    && curl -fsSL -o /tmp/sub-store-frontend.zip \
+    && curl -fsSL -o /tmp/cloudspace-frontend.zip \
         https://github.com/sub-store-org/Sub-Store-Front-End/releases/latest/download/dist.zip \
-    && unzip -q /tmp/sub-store-frontend.zip -d /tmp/sub-store-frontend \
-    && if [ -d /tmp/sub-store-frontend/dist ]; then \
-        cp -a /tmp/sub-store-frontend/dist/. /opt/app/frontend/; \
+    && unzip -q /tmp/cloudspace-frontend.zip -d /tmp/cloudspace-frontend \
+    && if [ -d /tmp/cloudspace-frontend/dist ]; then \
+        cp -a /tmp/cloudspace-frontend/dist/. /opt/app/frontend/; \
       else \
-        cp -a /tmp/sub-store-frontend/. /opt/app/frontend/; \
+        cp -a /tmp/cloudspace-frontend/. /opt/app/frontend/; \
       fi \
-    && curl -fsSL -o /opt/app/sub-store.bundle.js \
+    && curl -fsSL -o /opt/app/cloudspace-core.bundle.js \
         https://github.com/sub-store-org/Sub-Store/releases/latest/download/sub-store.bundle.js
 
 RUN mkdir -p /opt/app/http-meta/meta \
@@ -37,17 +37,18 @@ RUN apk add --no-cache ca-certificates curl procps tzdata
 ENV NODE_ENV=production \
     TZ=Asia/Shanghai \
     PORT=7860 \
+    CLOUDSPACE_PRODUCT_NAME=CloudSpace \
     ACCESS_LOCK_ENABLED=true \
     ACCESS_LOCK_PORT=7860 \
-    ACCESS_LOCK_DATA_PATH=/opt/app/data/access-lock.json \
-    SUB_STORE_UPSTREAM_HOST=127.0.0.1 \
-    SUB_STORE_UPSTREAM_PORT=3001 \
-    SUB_STORE_BACKEND_API_HOST=127.0.0.1 \
-    SUB_STORE_BACKEND_API_PORT=3001 \
-    SUB_STORE_BACKEND_MERGE=true \
-    SUB_STORE_FRONTEND_BACKEND_PATH=/2cXaAxRGfddmGz2yx1wA \
-    SUB_STORE_FRONTEND_PATH=/opt/app/frontend \
-    SUB_STORE_DATA_BASE_PATH=/opt/app/data \
+    ACCESS_LOCK_DATA_PATH=/opt/app/data/cloudspace-access.json \
+    CLOUDSPACE_UPSTREAM_HOST=127.0.0.1 \
+    CLOUDSPACE_UPSTREAM_PORT=3001 \
+    CLOUDSPACE_BACKEND_API_HOST=127.0.0.1 \
+    CLOUDSPACE_BACKEND_API_PORT=3001 \
+    CLOUDSPACE_BACKEND_MERGE=true \
+    CLOUDSPACE_BACKEND_PATH=/2cXaAxRGfddmGz2yx1wA \
+    CLOUDSPACE_FRONTEND_PATH=/opt/app/frontend \
+    CLOUDSPACE_DATA_BASE_PATH=/opt/app/data \
     HTTP_META_ENABLED=true \
     HTTP_META_HOST=127.0.0.1 \
     HTTP_META_PORT=9876 \
@@ -58,18 +59,18 @@ ENV NODE_ENV=production \
 WORKDIR /opt/app
 
 COPY --from=fetcher /opt/app /opt/app
-COPY start.sh /usr/local/bin/start-sub-store
-COPY access-lock-proxy.js /opt/app/access-lock-proxy.js
-COPY supabase-state.js /opt/app/supabase-state.js
+COPY start.sh /usr/local/bin/start-cloudspace
+COPY cloudspace-access-proxy.js /opt/app/cloudspace-access-proxy.js
+COPY cloudspace-state.js /opt/app/cloudspace-state.js
 
-RUN chmod +x /usr/local/bin/start-sub-store \
-    && addgroup -S substore \
-    && adduser -S -G substore substore \
-    && chown -R substore:substore /opt/app
+RUN chmod +x /usr/local/bin/start-cloudspace \
+    && addgroup -S cloudspace \
+    && adduser -S -G cloudspace cloudspace \
+    && chown -R cloudspace:cloudspace /opt/app
 
-USER substore
+USER cloudspace
 
 EXPOSE 7860
 VOLUME ["/opt/app/data"]
 
-CMD ["start-sub-store"]
+CMD ["start-cloudspace"]

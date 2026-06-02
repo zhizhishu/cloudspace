@@ -1,29 +1,40 @@
 #!/bin/sh
 set -eu
 
+CLOUDSPACE_PRODUCT_NAME="${CLOUDSPACE_PRODUCT_NAME:-CloudSpace}"
 export ACCESS_LOCK_ENABLED="${ACCESS_LOCK_ENABLED:-true}"
 export ACCESS_LOCK_PORT="${PORT:-${ACCESS_LOCK_PORT:-3000}}"
-export SUB_STORE_UPSTREAM_HOST="${SUB_STORE_UPSTREAM_HOST:-127.0.0.1}"
-export SUB_STORE_UPSTREAM_PORT="${SUB_STORE_UPSTREAM_PORT:-3001}"
+export CLOUDSPACE_UPSTREAM_HOST="${CLOUDSPACE_UPSTREAM_HOST:-127.0.0.1}"
+export CLOUDSPACE_UPSTREAM_PORT="${CLOUDSPACE_UPSTREAM_PORT:-3001}"
+export SUB_STORE_UPSTREAM_HOST="${SUB_STORE_UPSTREAM_HOST:-$CLOUDSPACE_UPSTREAM_HOST}"
+export SUB_STORE_UPSTREAM_PORT="${SUB_STORE_UPSTREAM_PORT:-$CLOUDSPACE_UPSTREAM_PORT}"
 
 if [ "$ACCESS_LOCK_ENABLED" = "true" ]; then
-  export SUB_STORE_BACKEND_API_HOST="${SUB_STORE_BACKEND_API_HOST:-127.0.0.1}"
-  export SUB_STORE_BACKEND_API_PORT="${SUB_STORE_BACKEND_API_PORT:-$SUB_STORE_UPSTREAM_PORT}"
+  export CLOUDSPACE_BACKEND_API_HOST="${CLOUDSPACE_BACKEND_API_HOST:-127.0.0.1}"
+  export CLOUDSPACE_BACKEND_API_PORT="${CLOUDSPACE_BACKEND_API_PORT:-$CLOUDSPACE_UPSTREAM_PORT}"
 else
-  export SUB_STORE_BACKEND_API_HOST="${SUB_STORE_PUBLIC_HOST:-0.0.0.0}"
-  export SUB_STORE_BACKEND_API_PORT="${PORT:-${SUB_STORE_BACKEND_API_PORT:-3000}}"
+  export CLOUDSPACE_BACKEND_API_HOST="${CLOUDSPACE_PUBLIC_HOST:-0.0.0.0}"
+  export CLOUDSPACE_BACKEND_API_PORT="${PORT:-${CLOUDSPACE_BACKEND_API_PORT:-3000}}"
 fi
 
-export SUB_STORE_BACKEND_MERGE="${SUB_STORE_BACKEND_MERGE:-true}"
-export SUB_STORE_FRONTEND_BACKEND_PATH="${SUB_STORE_FRONTEND_BACKEND_PATH:-/2cXaAxRGfddmGz2yx1wA}"
-export SUB_STORE_FRONTEND_PATH="${SUB_STORE_FRONTEND_PATH:-/opt/app/frontend}"
-export SUB_STORE_DATA_BASE_PATH="${SUB_STORE_DATA_BASE_PATH:-/opt/app/data}"
-export SUB_STORE_INTERNAL_API_BASE="${SUB_STORE_INTERNAL_API_BASE:-http://127.0.0.1:${SUB_STORE_BACKEND_API_PORT}${SUB_STORE_FRONTEND_BACKEND_PATH}}"
+export CLOUDSPACE_BACKEND_MERGE="${CLOUDSPACE_BACKEND_MERGE:-true}"
+export CLOUDSPACE_BACKEND_PATH="${CLOUDSPACE_BACKEND_PATH:-/2cXaAxRGfddmGz2yx1wA}"
+export CLOUDSPACE_FRONTEND_PATH="${CLOUDSPACE_FRONTEND_PATH:-/opt/app/frontend}"
+export CLOUDSPACE_DATA_BASE_PATH="${CLOUDSPACE_DATA_BASE_PATH:-/opt/app/data}"
+export CLOUDSPACE_INTERNAL_API_BASE="${CLOUDSPACE_INTERNAL_API_BASE:-http://127.0.0.1:${CLOUDSPACE_BACKEND_API_PORT}${CLOUDSPACE_BACKEND_PATH}}"
+# Internal compatibility for the bundled upstream core.
+export SUB_STORE_BACKEND_API_HOST="${SUB_STORE_BACKEND_API_HOST:-$CLOUDSPACE_BACKEND_API_HOST}"
+export SUB_STORE_BACKEND_API_PORT="${SUB_STORE_BACKEND_API_PORT:-$CLOUDSPACE_BACKEND_API_PORT}"
+export SUB_STORE_BACKEND_MERGE="${SUB_STORE_BACKEND_MERGE:-$CLOUDSPACE_BACKEND_MERGE}"
+export SUB_STORE_FRONTEND_BACKEND_PATH="${SUB_STORE_FRONTEND_BACKEND_PATH:-$CLOUDSPACE_BACKEND_PATH}"
+export SUB_STORE_FRONTEND_PATH="${SUB_STORE_FRONTEND_PATH:-$CLOUDSPACE_FRONTEND_PATH}"
+export SUB_STORE_DATA_BASE_PATH="${SUB_STORE_DATA_BASE_PATH:-$CLOUDSPACE_DATA_BASE_PATH}"
+export SUB_STORE_INTERNAL_API_BASE="${SUB_STORE_INTERNAL_API_BASE:-$CLOUDSPACE_INTERNAL_API_BASE}"
 export ACCESS_LOCK_UPSTREAM_HOST="${ACCESS_LOCK_UPSTREAM_HOST:-127.0.0.1}"
 export ACCESS_LOCK_UPSTREAM_PORT="${ACCESS_LOCK_UPSTREAM_PORT:-$SUB_STORE_BACKEND_API_PORT}"
-export ACCESS_LOCK_DATA_PATH="${ACCESS_LOCK_DATA_PATH:-$SUB_STORE_DATA_BASE_PATH/access-lock.json}"
+export ACCESS_LOCK_DATA_PATH="${ACCESS_LOCK_DATA_PATH:-$CLOUDSPACE_DATA_BASE_PATH/cloudspace-access.json}"
 
-mkdir -p "$SUB_STORE_DATA_BASE_PATH"
+mkdir -p "$CLOUDSPACE_DATA_BASE_PATH"
 
 supabase_backup_enabled() {
   [ "${SUPABASE_BACKUP_ENABLED:-false}" = "true" ] \
@@ -33,7 +44,7 @@ supabase_backup_enabled() {
 }
 
 supabase_object_path() {
-  printf '%s' "${SUPABASE_STORAGE_OBJECT:-sub-store/storage.json}"
+  printf '%s' "${SUPABASE_STORAGE_OBJECT:-cloudspace/storage.json}"
 }
 
 supabase_storage_url() {
@@ -70,44 +81,44 @@ ensure_supabase_bucket() {
   return 1
 }
 
-wait_for_sub_store() {
-  timeout="${SUB_STORE_BACKUP_WAIT_SECONDS:-60}"
+wait_for_cloudspace_core() {
+  timeout="${CLOUDSPACE_BACKUP_WAIT_SECONDS:-60}"
   i=0
   while [ "$i" -lt "$timeout" ]; do
-    if curl -fsS "${SUB_STORE_INTERNAL_API_BASE}/api/utils/env" >/dev/null 2>&1; then
+    if curl -fsS "${CLOUDSPACE_INTERNAL_API_BASE}/api/utils/env" >/dev/null 2>&1; then
       return 0
     fi
     i=$((i + 1))
     sleep 1
   done
-  echo "Sub-Store API did not become ready within ${timeout}s" >&2
+  echo "${CLOUDSPACE_PRODUCT_NAME} core API did not become ready within ${timeout}s" >&2
   return 1
 }
 
 restore_from_supabase() {
   [ "${SUPABASE_RESTORE_ON_START:-true}" = "true" ] || return 0
-  wait_for_sub_store || return 0
+  wait_for_cloudspace_core || return 0
   ensure_supabase_bucket || return 0
 
-  tmp_state="/tmp/sub-store-supabase-state.json"
-  tmp_storage="/tmp/sub-store-supabase-storage.json"
+  tmp_state="/tmp/cloudspace-supabase-state.json"
+  tmp_storage="/tmp/cloudspace-supabase-storage.json"
   if curl -fsS \
     -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
     -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
     "$(supabase_storage_url)" \
     -o "$tmp_state"; then
-    if ! node /opt/app/supabase-state.js restore "$tmp_state" "$SUB_STORE_DATA_BASE_PATH" "$tmp_storage"; then
+    if ! node /opt/app/cloudspace-state.js restore "$tmp_state" "$CLOUDSPACE_DATA_BASE_PATH" "$tmp_storage"; then
       echo "Failed to unpack Supabase state; starting with current local data" >&2
       return 0
     fi
 
     if [ ! -s "$tmp_storage" ]; then
-      echo "Supabase state has no Sub-Store storage; skipping restore"
+      echo "Supabase state has no ${CLOUDSPACE_PRODUCT_NAME} storage; skipping restore"
       return 0
     fi
 
     if [ "$(wc -c < "$tmp_storage" | tr -d ' ')" -lt "${SUPABASE_BACKUP_MIN_BYTES:-200}" ]; then
-      echo "Supabase backup is too small; skipping Sub-Store storage restore"
+      echo "Supabase backup is too small; skipping ${CLOUDSPACE_PRODUCT_NAME} storage restore"
       return 0
     fi
 
@@ -115,10 +126,10 @@ restore_from_supabase() {
       -X POST \
       -H "Content-Type: application/json" \
       --data-binary @- \
-      "${SUB_STORE_INTERNAL_API_BASE}/api/storage" >/dev/null; then
-      echo "Restored Sub-Store data from Supabase state"
+      "${CLOUDSPACE_INTERNAL_API_BASE}/api/storage" >/dev/null; then
+      echo "Restored ${CLOUDSPACE_PRODUCT_NAME} data from Supabase state"
     else
-      echo "Failed to restore Sub-Store data from Supabase state" >&2
+      echo "Failed to restore ${CLOUDSPACE_PRODUCT_NAME} data from Supabase state" >&2
     fi
   else
     echo "No readable Supabase state found; starting with current local data"
@@ -126,30 +137,30 @@ restore_from_supabase() {
 }
 
 backup_to_supabase_once() {
-  wait_for_sub_store || return 0
+  wait_for_cloudspace_core || return 0
   ensure_supabase_bucket || return 0
 
-  tmp_storage="/tmp/sub-store-supabase-storage.json"
-  tmp_state="/tmp/sub-store-supabase-state.json"
-  if ! curl -fsS "${SUB_STORE_INTERNAL_API_BASE}/api/storage" -o "$tmp_storage"; then
-    echo "Failed to export Sub-Store storage for Supabase backup" >&2
+  tmp_storage="/tmp/cloudspace-supabase-storage.json"
+  tmp_state="/tmp/cloudspace-supabase-state.json"
+  if ! curl -fsS "${CLOUDSPACE_INTERNAL_API_BASE}/api/storage" -o "$tmp_storage"; then
+    echo "Failed to export ${CLOUDSPACE_PRODUCT_NAME} storage for Supabase backup" >&2
     return 0
   fi
 
   bytes="$(wc -c < "$tmp_storage" | tr -d ' ')"
   if [ "$bytes" -lt "${SUPABASE_BACKUP_MIN_BYTES:-200}" ] && [ "${SUPABASE_BACKUP_ALLOW_EMPTY:-false}" != "true" ]; then
-    echo "Sub-Store export is ${bytes} bytes; skipping backup to avoid overwriting with empty data"
+    echo "${CLOUDSPACE_PRODUCT_NAME} export is ${bytes} bytes; skipping backup to avoid overwriting with empty data"
     return 0
   fi
 
-  if ! node /opt/app/supabase-state.js backup "$tmp_storage" "$SUB_STORE_DATA_BASE_PATH" "$tmp_state"; then
+  if ! node /opt/app/cloudspace-state.js backup "$tmp_storage" "$CLOUDSPACE_DATA_BASE_PATH" "$tmp_state"; then
     echo "Failed to pack Supabase state" >&2
     return 0
   fi
 
   new_hash="$(sha256sum "$tmp_state" | awk '{print $1}')"
   old_hash=""
-  [ -f /tmp/sub-store-supabase-backup.sha256 ] && old_hash="$(cat /tmp/sub-store-supabase-backup.sha256)"
+  [ -f /tmp/cloudspace-supabase-backup.sha256 ] && old_hash="$(cat /tmp/cloudspace-supabase-backup.sha256)"
   if [ "$new_hash" = "$old_hash" ]; then
     return 0
   fi
@@ -162,10 +173,10 @@ backup_to_supabase_once() {
     -H "Content-Type: application/json" \
     --data-binary @"$tmp_state" \
     "$(supabase_storage_url)" >/dev/null; then
-    printf '%s' "$new_hash" > /tmp/sub-store-supabase-backup.sha256
-    echo "Backed up Sub-Store state to Supabase Storage (${bytes} storage bytes)"
+    printf '%s' "$new_hash" > /tmp/cloudspace-supabase-backup.sha256
+    echo "Backed up ${CLOUDSPACE_PRODUCT_NAME} state to Supabase Storage (${bytes} storage bytes)"
   else
-    echo "Failed to upload Sub-Store state to Supabase Storage" >&2
+    echo "Failed to upload ${CLOUDSPACE_PRODUCT_NAME} state to Supabase Storage" >&2
   fi
 }
 
@@ -198,14 +209,14 @@ start_http_meta() {
   echo "HTTP META listening on ${HTTP_META_HOST:-127.0.0.1}:${HTTP_META_PORT:-9876}"
 }
 
-start_sub_store() {
-  node /opt/app/sub-store.bundle.js &
-  SUB_STORE_PID="$!"
+start_cloudspace_core() {
+  node /opt/app/cloudspace-core.bundle.js &
+  CLOUDSPACE_CORE_PID="$!"
 }
 
 start_access_lock() {
   [ "$ACCESS_LOCK_ENABLED" = "true" ] || return 0
-  node /opt/app/access-lock-proxy.js &
+  node /opt/app/cloudspace-access-proxy.js &
   ACCESS_LOCK_PID="$!"
   sleep 1
   if ! kill -0 "$ACCESS_LOCK_PID" 2>/dev/null; then
@@ -216,23 +227,23 @@ start_access_lock() {
 }
 
 stop_children() {
-  for pid in "${ACCESS_LOCK_PID:-}" "${SUPABASE_BACKUP_PID:-}" "${SUB_STORE_PID:-}" "${HTTP_META_PID:-}"; do
+  for pid in "${ACCESS_LOCK_PID:-}" "${SUPABASE_BACKUP_PID:-}" "${CLOUDSPACE_CORE_PID:-}" "${HTTP_META_PID:-}"; do
     [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
   done
   wait "${ACCESS_LOCK_PID:-}" 2>/dev/null || true
-  wait "${SUB_STORE_PID:-}" 2>/dev/null || true
+  wait "${CLOUDSPACE_CORE_PID:-}" 2>/dev/null || true
 }
 trap stop_children INT TERM
 
 HTTP_META_PID=""
-SUB_STORE_PID=""
+CLOUDSPACE_CORE_PID=""
 SUPABASE_BACKUP_PID=""
 ACCESS_LOCK_PID=""
 
 start_http_meta
 
 if [ "$ACCESS_LOCK_ENABLED" = "true" ] || supabase_backup_enabled; then
-  start_sub_store
+  start_cloudspace_core
 
   if supabase_backup_enabled; then
     restore_from_supabase
@@ -244,8 +255,8 @@ if [ "$ACCESS_LOCK_ENABLED" = "true" ] || supabase_backup_enabled; then
     start_access_lock
     wait "$ACCESS_LOCK_PID"
   else
-    wait "$SUB_STORE_PID"
+    wait "$CLOUDSPACE_CORE_PID"
   fi
 else
-  exec node /opt/app/sub-store.bundle.js
+  exec node /opt/app/cloudspace-core.bundle.js
 fi

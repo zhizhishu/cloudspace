@@ -5,12 +5,13 @@ const net = require("net");
 const path = require("path");
 const { URLSearchParams } = require("url");
 
+const productName = process.env.CLOUDSPACE_PRODUCT_NAME || "CloudSpace";
 const enabled = process.env.ACCESS_LOCK_ENABLED !== "false";
 const listenPort = Number(process.env.ACCESS_LOCK_PORT || process.env.PORT || 3000);
-const upstreamHost = process.env.ACCESS_LOCK_UPSTREAM_HOST || process.env.SUB_STORE_UPSTREAM_HOST || "127.0.0.1";
-const upstreamPort = Number(process.env.ACCESS_LOCK_UPSTREAM_PORT || process.env.SUB_STORE_BACKEND_API_PORT || 3001);
-const dataPath = process.env.ACCESS_LOCK_DATA_PATH || path.join(process.env.SUB_STORE_DATA_BASE_PATH || "/opt/app/data", "access-lock.json");
-const cookieName = process.env.ACCESS_LOCK_COOKIE_NAME || "sub_store_access";
+const upstreamHost = process.env.ACCESS_LOCK_UPSTREAM_HOST || process.env.CLOUDSPACE_UPSTREAM_HOST || "127.0.0.1";
+const upstreamPort = Number(process.env.ACCESS_LOCK_UPSTREAM_PORT || process.env.CLOUDSPACE_BACKEND_API_PORT || 3001);
+const dataPath = process.env.ACCESS_LOCK_DATA_PATH || path.join(process.env.CLOUDSPACE_DATA_BASE_PATH || "/opt/app/data", "cloudspace-access.json");
+const cookieName = process.env.ACCESS_LOCK_COOKIE_NAME || "cloudspace_access";
 const initialPassword = process.env.ACCESS_LOCK_INITIAL_PASSWORD || process.env.ACCESS_LOCK_PASSWORD || "";
 
 function nowIso() {
@@ -64,10 +65,10 @@ function loadConfig() {
   atomicWriteJson(dataPath, config);
 
   if (initialPassword) {
-    console.log("[ACCESS LOCK] Initial password loaded from ACCESS_LOCK_INITIAL_PASSWORD.");
+    console.log("[CLOUDSPACE ACCESS] Initial password loaded from ACCESS_LOCK_INITIAL_PASSWORD.");
   } else {
-    console.log(`[ACCESS LOCK] Generated initial password: ${password}`);
-    console.log("[ACCESS LOCK] Change it from /__lock after logging in.");
+    console.log(`[CLOUDSPACE ACCESS] Generated initial password: ${password}`);
+    console.log("[CLOUDSPACE ACCESS] Change it from /__lock after logging in.");
   }
 
   return config;
@@ -140,7 +141,7 @@ function htmlPage(req, message = "") {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Sub-Store Access</title>
+  <title>${escapeHtml(productName)} Access</title>
   <style>
     :root { color-scheme: light dark; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
     body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #101820; color: #eef4f8; }
@@ -159,12 +160,12 @@ function htmlPage(req, message = "") {
 </head>
 <body>
   <main>
-    <h1>Sub-Store Access</h1>
+    <h1>${escapeHtml(productName)} Access</h1>
     ${message ? `<p class="message">${escapeHtml(message)}</p>` : ""}
     ${loggedIn ? `
-      <p>Access is unlocked. You can open Sub-Store or change the access password here.</p>
+      <p>Access is unlocked. You can open ${escapeHtml(productName)} or change the access password here.</p>
       <div class="row">
-        <a class="button" href="/">Open Sub-Store</a>
+        <a class="button" href="/">Open ${escapeHtml(productName)}</a>
         <form method="post" action="/__lock/logout"><button class="secondary" type="submit">Sign out</button></form>
       </div>
       <hr>
@@ -355,5 +356,5 @@ server.on("upgrade", (req, socket, head) => {
 });
 
 server.listen(listenPort, "0.0.0.0", () => {
-  console.log(`[ACCESS LOCK] ${enabled ? "enabled" : "disabled"} on 0.0.0.0:${listenPort}, upstream ${upstreamHost}:${upstreamPort}`);
+  console.log(`[CLOUDSPACE ACCESS] ${enabled ? "enabled" : "disabled"} on 0.0.0.0:${listenPort}, upstream ${upstreamHost}:${upstreamPort}`);
 });
