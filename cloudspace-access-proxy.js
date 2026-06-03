@@ -13,9 +13,16 @@ const upstreamPort = Number(process.env.ACCESS_LOCK_UPSTREAM_PORT || process.env
 const dataPath = process.env.ACCESS_LOCK_DATA_PATH || path.join(process.env.CLOUDSPACE_DATA_BASE_PATH || "/opt/app/data", "cloudspace-access.json");
 const cookieName = process.env.ACCESS_LOCK_COOKIE_NAME || "cloudspace_access";
 const initialPassword = process.env.ACCESS_LOCK_INITIAL_PASSWORD || process.env.ACCESS_LOCK_PASSWORD || "";
+const backendPath = normalizeBackendPath(process.env.CLOUDSPACE_BACKEND_PATH || process.env.SUB_STORE_FRONTEND_BACKEND_PATH || "/2cXaAxRGfddmGz2yx1wA");
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function normalizeBackendPath(value) {
+  const trimmed = String(value || "").trim();
+  if (!trimmed || trimmed === "/") return "";
+  return `/${trimmed.replace(/^\/+|\/+$/g, "")}`;
 }
 
 function randomPassword() {
@@ -318,12 +325,19 @@ function cleanHeaders(headers) {
   return out;
 }
 
+function upstreamPath(rawPath) {
+  if (backendPath && (rawPath === "/api" || rawPath.startsWith("/api/") || rawPath.startsWith("/api?"))) {
+    return `${backendPath}${rawPath}`;
+  }
+  return rawPath;
+}
+
 function proxyHttp(req, res) {
   const options = {
     hostname: upstreamHost,
     port: upstreamPort,
     method: req.method,
-    path: req.url,
+    path: upstreamPath(req.url),
     headers: cleanHeaders(req.headers)
   };
   const upstreamReq = http.request(options, (upstreamRes) => {
