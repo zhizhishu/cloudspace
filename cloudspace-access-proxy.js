@@ -346,27 +346,40 @@ function frontendBootstrapScript() {
 </script>`;
 }
 
-function shouldInjectFrontendBootstrap(req, upstreamRes) {
+function shouldTransformFrontendResponse(req, upstreamRes) {
   if (req.method !== "GET") return false;
   const status = upstreamRes.statusCode || 200;
   if (status < 200 || status >= 300) return false;
   const contentType = String(upstreamRes.headers["content-type"] || "");
-  return contentType.includes("text/html");
+  return contentType.includes("text/html") || contentType.includes("javascript");
 }
 
-function pipeInjectedHtml(req, res, upstreamRes) {
+function transformFrontendBody(req, upstreamRes, body) {
+  const contentType = String(upstreamRes.headers["content-type"] || "");
+  if (contentType.includes("text/html")) {
+    const script = frontendBootstrapScript();
+    if (body.includes("<head>")) {
+      return body.replace("<head>", `<head>${script}`);
+    }
+    if (body.includes("</head>")) {
+      return body.replace("</head>", `${script}</head>`);
+    }
+    return `${script}${body}`;
+  }
+
+  if (contentType.includes("javascript")) {
+    return body.replaceAll("https://sub.store", "");
+  }
+
+  return body;
+}
+
+function pipeTransformedFrontend(req, res, upstreamRes) {
   const chunks = [];
   upstreamRes.on("data", (chunk) => chunks.push(chunk));
   upstreamRes.on("end", () => {
     let body = Buffer.concat(chunks).toString("utf8");
-    const script = frontendBootstrapScript();
-    if (body.includes("<head>")) {
-      body = body.replace("<head>", `<head>${script}`);
-    } else if (body.includes("</head>")) {
-      body = body.replace("</head>", `${script}</head>`);
-    } else {
-      body = `${script}${body}`;
-    }
+    body = transformFrontendBody(req, upstreamRes, body);
 
     const headers = { ...upstreamRes.headers };
     delete headers["content-length"];
@@ -384,8 +397,8 @@ function proxyHttp(req, res) {
     headers: cleanHeaders(req.headers)
   };
   const upstreamReq = http.request(options, (upstreamRes) => {
-    if (shouldInjectFrontendBootstrap(req, upstreamRes)) {
-      pipeInjectedHtml(req, res, upstreamRes);
+    if (shouldTransformFrontendResponse(req, upstreamRes)) {
+      pipeTransformedFrontend(req, res, upstreamRes);
       return;
     }
     res.writeHead(upstreamRes.statusCode || 502, upstreamRes.headers);
