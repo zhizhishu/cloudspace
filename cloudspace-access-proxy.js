@@ -33,6 +33,11 @@ function hashPassword(password, salt) {
   return crypto.pbkdf2Sync(password, salt, 120000, 32, "sha256").toString("base64url");
 }
 
+function initialPasswordFingerprint(password) {
+  if (!password) return "";
+  return crypto.createHash("sha256").update(`cloudspace-access-initial-password:${password}`).digest("base64url");
+}
+
 function sign(secret, value) {
   return crypto.createHmac("sha256", secret).update(value).digest("base64url");
 }
@@ -51,7 +56,7 @@ function atomicWriteJson(file, value) {
   fs.renameSync(tmp, file);
 }
 
-function makeConfig(password, existing = {}) {
+function makeConfig(password, existing = {}, options = {}) {
   const passwordSalt = crypto.randomBytes(16).toString("base64url");
   return {
     version: 1,
@@ -59,18 +64,20 @@ function makeConfig(password, existing = {}) {
     updatedAt: nowIso(),
     passwordSalt,
     passwordHash: hashPassword(password, passwordSalt),
-    sessionSecret: crypto.randomBytes(32).toString("base64url")
+    sessionSecret: crypto.randomBytes(32).toString("base64url"),
+    initialPasswordFingerprint: options.initialPasswordFingerprint || existing.initialPasswordFingerprint || ""
   };
 }
 
 function loadConfig() {
+  const initialFingerprint = initialPasswordFingerprint(initialPassword);
   if (fs.existsSync(dataPath)) {
     const parsed = JSON.parse(fs.readFileSync(dataPath, "utf8"));
     if (parsed && parsed.passwordHash && parsed.passwordSalt && parsed.sessionSecret) {
-      if (initialPassword && !safeEqual(hashPassword(initialPassword, parsed.passwordSalt), parsed.passwordHash)) {
-        const updated = makeConfig(initialPassword, parsed);
+      if (initialPassword && parsed.initialPasswordFingerprint !== initialFingerprint) {
+        const updated = makeConfig(initialPassword, parsed, { initialPasswordFingerprint: initialFingerprint });
         atomicWriteJson(dataPath, updated);
-        console.log("[CLOUDSPACE ACCESS] Password synced from ACCESS_LOCK_INITIAL_PASSWORD.");
+        console.log("[CLOUDSPACE ACCESS] Password reset from updated ACCESS_LOCK_INITIAL_PASSWORD.");
         return updated;
       }
       return parsed;
@@ -78,7 +85,7 @@ function loadConfig() {
   }
 
   const password = initialPassword || randomPassword();
-  const config = makeConfig(password);
+  const config = makeConfig(password, {}, { initialPasswordFingerprint: initialFingerprint });
   atomicWriteJson(dataPath, config);
 
   if (initialPassword) {

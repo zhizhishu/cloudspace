@@ -67,6 +67,18 @@ ghcr.io/zhizhishu/cloudspace:latest
 
 CloudSpace still maps a small set of internal compatibility variables for the bundled upstream core at container startup. Keep the public deployment configuration on the `CLOUDSPACE_*` variables unless you are debugging the core process directly.
 
+## Access Password
+
+Use `/__lock` for normal password changes after login.
+
+`ACCESS_LOCK_INITIAL_PASSWORD` is an initial/reset seed, not a value that should overwrite the user-managed password on every restart. CloudSpace stores only a hash of the password plus a fingerprint of the last applied initial secret in `/opt/app/data/cloudspace-access.json`.
+
+- First start: if `ACCESS_LOCK_INITIAL_PASSWORD` is set, CloudSpace uses it as the initial password.
+- Normal change: changing the password from `/__lock` survives restarts and Supabase restore.
+- Forced reset: changing `ACCESS_LOCK_INITIAL_PASSWORD` in Hugging Face or another platform secret, then restarting the container, applies the new secret once as a password reset.
+
+If Supabase restore is enabled, the restored access-lock config is loaded before the access gateway starts. That means the password stored in the restored state remains active unless the platform secret has changed since the last applied reset.
+
 ## Supabase Storage Backup
 
 CloudSpace can use Supabase Storage as an external backup target. It is not a POSIX container volume; the container starts the core service, verifies or creates a private Supabase Storage bucket, restores `storage.json` when present, then periodically exports `/api/storage` and uploads a CloudSpace state bundle back with upsert enabled.
@@ -76,7 +88,7 @@ The state bundle stores:
 - CloudSpace server-side `/api/storage` export.
 - Small state files from `/opt/app/data`, including CloudSpace restore/sync config and the access-lock config file.
 
-Browser-local OAuth sessions, browser localStorage, and GitHub website login cookies are not server-side CloudSpace data. Those cannot be restored by Supabase on another browser. The access lock avoids relying on a browser's GitHub login for basic private access.
+Browser-local OAuth sessions, browser localStorage, and GitHub website login cookies are not server-side CloudSpace data. Those cannot be restored by Supabase on another browser or device, so GitHub may still ask for login again there. The access lock avoids relying on a browser's GitHub login for basic private access.
 
 Create a Supabase project, then set:
 
@@ -127,7 +139,7 @@ ghcr.io/zhizhishu/cloudspace:latest
 
 ## Hugging Face Spaces
 
-Create a Docker Space and push this repository to it. Hugging Face reads the Space configuration from the YAML block at the top of this README:
+Create a Docker Space and push this repository to it, or use a minimal Space repository that points at the published GHCR image. Hugging Face reads the Space configuration from the YAML block at the top of this README:
 
 ```yaml
 sdk: docker
@@ -135,3 +147,5 @@ app_port: 7860
 ```
 
 Keep the same Supabase environment variables in Space secrets if you want CloudSpace server-side state to restore after restarts. Free Spaces have more memory than the current Northflank free container, but their default runtime disk is still ephemeral.
+
+When updating the Space manually, make sure the target is `Echocq/cloudspace`. Older local remotes or browser tabs may still point at previous test Spaces and should not be reused for deployment.
