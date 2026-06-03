@@ -341,6 +341,11 @@ function frontendBootstrapScript() {
   try {
     const desiredHostAPI = { current: ${JSON.stringify(apiName)}, apis: [{ name: ${JSON.stringify(apiName)}, url: "/" }] };
     const desiredHostAPIValue = JSON.stringify(desiredHostAPI);
+    const syncCloudspaceBackend = () => {
+      Storage.prototype.setItem.call(localStorage, "hostAPI", desiredHostAPIValue);
+      Storage.prototype.setItem.call(localStorage, "backendConfigured", "true");
+      Storage.prototype.setItem.call(localStorage, "magicPathConfigured", "true");
+    };
     const shouldRewriteHostAPI = (value) => {
       try {
         const parsed = JSON.parse(value || "{}");
@@ -350,16 +355,32 @@ function frontendBootstrapScript() {
         return true;
       }
     };
-    const originalSetItem = localStorage.setItem.bind(localStorage);
-    localStorage.setItem = (key, value) => {
+    const originalSetItem = Storage.prototype.setItem;
+    const originalRemoveItem = Storage.prototype.removeItem;
+    const originalClear = Storage.prototype.clear;
+    Storage.prototype.setItem = function (key, value) {
       if (key === "hostAPI" && shouldRewriteHostAPI(value)) value = desiredHostAPIValue;
-      return originalSetItem(key, value);
+      return originalSetItem.call(this, key, value);
     };
-    if (shouldRewriteHostAPI(localStorage.getItem("hostAPI"))) {
-      originalSetItem("hostAPI", desiredHostAPIValue);
-    }
-    originalSetItem("backendConfigured", "true");
-    originalSetItem("magicPathConfigured", "true");
+    Storage.prototype.removeItem = function (key) {
+      if (this === localStorage && ["hostAPI", "backendConfigured", "magicPathConfigured"].includes(key)) {
+        setTimeout(syncCloudspaceBackend, 0);
+      }
+      return originalRemoveItem.call(this, key);
+    };
+    Storage.prototype.clear = function () {
+      const result = originalClear.call(this);
+      if (this === localStorage) setTimeout(syncCloudspaceBackend, 0);
+      return result;
+    };
+    syncCloudspaceBackend();
+    window.addEventListener("storage", syncCloudspaceBackend);
+    document.addEventListener("DOMContentLoaded", syncCloudspaceBackend);
+    setInterval(() => {
+      if (shouldRewriteHostAPI(localStorage.getItem("hostAPI")) || localStorage.getItem("backendConfigured") !== "true" || localStorage.getItem("magicPathConfigured") !== "true") {
+        syncCloudspaceBackend();
+      }
+    }, 250);
     document.title = ${JSON.stringify(productName)};
   } catch (_) {}
 })();
