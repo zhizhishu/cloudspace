@@ -308,7 +308,9 @@ function wantsHtml(req) {
 }
 
 function unauthorized(req, res) {
-  if (wantsHtml(req)) {
+  const url = new URL(req.url, "http://local");
+  const isApiRequest = url.pathname === "/api" || url.pathname.startsWith("/api/");
+  if (!isApiRequest && wantsHtml(req)) {
     redirect(res, `/__lock/login?next=${encodeURIComponent(req.url || "/")}`);
   } else {
     res.writeHead(401, { "content-type": "application/json", "cache-control": "no-store" });
@@ -337,13 +339,40 @@ function frontendBootstrapScript() {
   return `<script>
 (() => {
   try {
-    const hostAPI = { current: ${JSON.stringify(apiName)}, apis: [{ name: ${JSON.stringify(apiName)}, url: "/" }] };
-    localStorage.setItem("hostAPI", JSON.stringify(hostAPI));
-    localStorage.setItem("backendConfigured", "true");
-    localStorage.setItem("magicPathConfigured", "true");
+    const desiredHostAPI = { current: ${JSON.stringify(apiName)}, apis: [{ name: ${JSON.stringify(apiName)}, url: "/" }] };
+    const desiredHostAPIValue = JSON.stringify(desiredHostAPI);
+    const shouldRewriteHostAPI = (value) => {
+      try {
+        const parsed = JSON.parse(value || "{}");
+        if (!parsed.current || !Array.isArray(parsed.apis) || parsed.apis.length === 0) return true;
+        return JSON.stringify(parsed).includes("sub.store");
+      } catch (_) {
+        return true;
+      }
+    };
+    const originalSetItem = localStorage.setItem.bind(localStorage);
+    localStorage.setItem = (key, value) => {
+      if (key === "hostAPI" && shouldRewriteHostAPI(value)) value = desiredHostAPIValue;
+      return originalSetItem(key, value);
+    };
+    if (shouldRewriteHostAPI(localStorage.getItem("hostAPI"))) {
+      originalSetItem("hostAPI", desiredHostAPIValue);
+    }
+    originalSetItem("backendConfigured", "true");
+    originalSetItem("magicPathConfigured", "true");
+    document.title = ${JSON.stringify(productName)};
   } catch (_) {}
 })();
 </script>`;
+}
+
+function applyCloudspaceBranding(body) {
+  return body
+    .replaceAll("Sub Store", productName)
+    .replaceAll("Sub-Store", productName)
+    .replaceAll("SubStore", productName)
+    .replaceAll("sub-store", "cloudspace")
+    .replaceAll("sub.store", "cloudspace.local");
 }
 
 function shouldTransformFrontendResponse(req, upstreamRes) {
@@ -358,6 +387,7 @@ function transformFrontendBody(req, upstreamRes, body) {
   const contentType = String(upstreamRes.headers["content-type"] || "");
   if (contentType.includes("text/html")) {
     const script = frontendBootstrapScript();
+    body = applyCloudspaceBranding(body);
     if (body.includes("<head>")) {
       return body.replace("<head>", `<head>${script}`);
     }
@@ -368,7 +398,7 @@ function transformFrontendBody(req, upstreamRes, body) {
   }
 
   if (contentType.includes("javascript")) {
-    return body.replaceAll("https://sub.store", "");
+    return applyCloudspaceBranding(body).replaceAll("https://cloudspace.local", "");
   }
 
   return body;
