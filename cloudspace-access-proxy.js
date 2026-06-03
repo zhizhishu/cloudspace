@@ -332,6 +332,47 @@ function upstreamPath(rawPath) {
   return rawPath;
 }
 
+function frontendBootstrapScript() {
+  const apiName = `${productName} Local`;
+  return `<script>
+(() => {
+  try {
+    const hostAPI = { current: ${JSON.stringify(apiName)}, apis: [{ name: ${JSON.stringify(apiName)}, url: "/" }] };
+    localStorage.setItem("hostAPI", JSON.stringify(hostAPI));
+    localStorage.setItem("backendConfigured", "true");
+    localStorage.setItem("magicPathConfigured", "true");
+  } catch (_) {}
+})();
+</script>`;
+}
+
+function shouldInjectFrontendBootstrap(req, upstreamRes) {
+  if (req.method !== "GET") return false;
+  const status = upstreamRes.statusCode || 200;
+  if (status < 200 || status >= 300) return false;
+  const contentType = String(upstreamRes.headers["content-type"] || "");
+  return contentType.includes("text/html");
+}
+
+function pipeInjectedHtml(req, res, upstreamRes) {
+  const chunks = [];
+  upstreamRes.on("data", (chunk) => chunks.push(chunk));
+  upstreamRes.on("end", () => {
+    let body = Buffer.concat(chunks).toString("utf8");
+    const script = frontendBootstrapScript();
+    if (body.includes("</head>")) {
+      body = body.replace("</head>", `${script}</head>`);
+    } else {
+      body = `${script}${body}`;
+    }
+
+    const headers = { ...upstreamRes.headers };
+    delete headers["content-length"];
+    res.writeHead(upstreamRes.statusCode || 200, headers);
+    res.end(body);
+  });
+}
+
 function proxyHttp(req, res) {
   const options = {
     hostname: upstreamHost,
@@ -341,6 +382,10 @@ function proxyHttp(req, res) {
     headers: cleanHeaders(req.headers)
   };
   const upstreamReq = http.request(options, (upstreamRes) => {
+    if (shouldInjectFrontendBootstrap(req, upstreamRes)) {
+      pipeInjectedHtml(req, res, upstreamRes);
+      return;
+    }
     res.writeHead(upstreamRes.statusCode || 502, upstreamRes.headers);
     upstreamRes.pipe(res);
   });
