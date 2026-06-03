@@ -360,7 +360,9 @@ function pipeInjectedHtml(req, res, upstreamRes) {
   upstreamRes.on("end", () => {
     let body = Buffer.concat(chunks).toString("utf8");
     const script = frontendBootstrapScript();
-    if (body.includes("</head>")) {
+    if (body.includes("<head>")) {
+      body = body.replace("<head>", `<head>${script}`);
+    } else if (body.includes("</head>")) {
       body = body.replace("</head>", `${script}</head>`);
     } else {
       body = `${script}${body}`;
