@@ -44,24 +44,34 @@ function atomicWriteJson(file, value) {
   fs.renameSync(tmp, file);
 }
 
-function loadConfig() {
-  if (fs.existsSync(dataPath)) {
-    const parsed = JSON.parse(fs.readFileSync(dataPath, "utf8"));
-    if (parsed && parsed.passwordHash && parsed.passwordSalt && parsed.sessionSecret) {
-      return parsed;
-    }
-  }
-
-  const password = initialPassword || randomPassword();
+function makeConfig(password, existing = {}) {
   const passwordSalt = crypto.randomBytes(16).toString("base64url");
-  const config = {
+  return {
     version: 1,
-    createdAt: nowIso(),
+    createdAt: existing.createdAt || nowIso(),
     updatedAt: nowIso(),
     passwordSalt,
     passwordHash: hashPassword(password, passwordSalt),
     sessionSecret: crypto.randomBytes(32).toString("base64url")
   };
+}
+
+function loadConfig() {
+  if (fs.existsSync(dataPath)) {
+    const parsed = JSON.parse(fs.readFileSync(dataPath, "utf8"));
+    if (parsed && parsed.passwordHash && parsed.passwordSalt && parsed.sessionSecret) {
+      if (initialPassword && !safeEqual(hashPassword(initialPassword, parsed.passwordSalt), parsed.passwordHash)) {
+        const updated = makeConfig(initialPassword, parsed);
+        atomicWriteJson(dataPath, updated);
+        console.log("[CLOUDSPACE ACCESS] Password synced from ACCESS_LOCK_INITIAL_PASSWORD.");
+        return updated;
+      }
+      return parsed;
+    }
+  }
+
+  const password = initialPassword || randomPassword();
+  const config = makeConfig(password);
   atomicWriteJson(dataPath, config);
 
   if (initialPassword) {
