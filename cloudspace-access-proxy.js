@@ -28,6 +28,18 @@ const maxFrontendTransformBytes = positiveNumber(
 );
 const frontendCacheControl = process.env.ACCESS_LOCK_FRONTEND_CACHE_CONTROL || process.env.CLOUDSPACE_FRONTEND_CACHE_CONTROL || "no-store";
 const apiCacheControl = process.env.ACCESS_LOCK_API_CACHE_CONTROL || process.env.CLOUDSPACE_API_CACHE_CONTROL || "no-store";
+const cloudspaceConfigPath = process.env.CLOUDSPACE_CONFIG_PATH || "/__cloudspace/config.json";
+const cloudspaceHealthPath = process.env.CLOUDSPACE_HEALTH_PATH || "/__cloudspace/health";
+const apiMaxConcurrent = positiveNumber(process.env.CLOUDSPACE_API_MAX_CONCURRENT || process.env.ACCESS_LOCK_API_MAX_CONCURRENT, 4);
+const apiMaxBodyBytes = positiveNumber(process.env.CLOUDSPACE_API_MAX_BODY_BYTES || process.env.ACCESS_LOCK_API_MAX_BODY_BYTES, 8 * 1024 * 1024);
+const httpMetaEnabled = process.env.HTTP_META_ENABLED !== "false";
+const httpMetaHost = process.env.HTTP_META_HOST || "127.0.0.1";
+const httpMetaPort = Number(process.env.HTTP_META_PORT || 9876);
+const healthTimeoutMs = positiveNumber(process.env.CLOUDSPACE_HEALTH_TIMEOUT_MS, 2500);
+const healthCacheMs = positiveNumber(process.env.CLOUDSPACE_HEALTH_CACHE_MS, 10000);
+let activeApiRequests = 0;
+let cachedHealth = null;
+let cachedHealthAt = 0;
 
 function nowIso() {
   return new Date().toISOString();
@@ -236,6 +248,11 @@ function sendHtml(res, status, body) {
   res.end(body);
 }
 
+function sendJson(res, status, value) {
+  res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });
+  res.end(JSON.stringify(value));
+}
+
 function redirect(res, location) {
   res.writeHead(303, { location, "cache-control": "no-store" });
   res.end();
@@ -335,12 +352,10 @@ function wantsHtml(req) {
 
 function unauthorized(req, res) {
   const url = new URL(req.url, "http://local");
-  const isApiRequest = url.pathname === "/api" || url.pathname.startsWith("/api/");
-  if (!isApiRequest && wantsHtml(req)) {
+  if (!isApiPath(url.pathname) && wantsHtml(req)) {
     redirect(res, `/__lock/login?next=${encodeURIComponent(req.url || "/")}`);
   } else {
-    res.writeHead(401, { "content-type": "application/json", "cache-control": "no-store" });
-    res.end(JSON.stringify({ error: "locked" }));
+    sendJson(res, 401, { error: "locked" });
   }
 }
 
@@ -362,6 +377,122 @@ function upstreamPath(rawPath) {
 
 function isApiPath(rawPath) {
   return rawPath === "/api" || rawPath.startsWith("/api/") || rawPath.startsWith("/api?");
+}
+
+function routeKind(req) {
+  const url = new URL(req.url, "http://local");
+  if (url.pathname.startsWith("/__lock")) return "lock";
+  if (url.pathname.startsWith("/__cloudspace")) return "cloudspace";
+  if (isApiPath(url.pathname)) return "api";
+  return "frontend";
+}
+
+function cloudspaceConfig() {
+  return {
+    productName,
+    backend: {
+      apiBase: "/",
+      backendPath,
+      sameOrigin: true
+    },
+    routes: {
+      lock: "/__lock",
+      health: cloudspaceHealthPath,
+      config: cloudspaceConfigPath,
+      api: "/api"
+    },
+    httpMeta: {
+      enabled: httpMetaEnabled,
+      host: "127.0.0.1",
+      port: httpMetaPort
+    }
+  };
+}
+
+function healthProbe(options) {
+  return new Promise((resolve) => {
+    const startedAt = Date.now();
+    const req = http.request(options, (res) => {
+      res.resume();
+      res.on("end", () => {
+        resolve({ ok: res.statusCode >= 200 && res.statusCode < 500, statusCode: res.statusCode, ms: Date.now() - startedAt });
+      });
+    });
+    req.setTimeout(healthTimeoutMs, () => req.destroy(new Error(`timeout after ${healthTimeoutMs} ms`)));
+    req.on("error", (error) => resolve({ ok: false, error: error.message, ms: Date.now() - startedAt }));
+    req.end();
+  });
+}
+
+async function buildHealth() {
+  const now = Date.now();
+  if (cachedHealth && now - cachedHealthAt < healthCacheMs) return cachedHealth;
+
+  const [core, httpMeta] = await Promise.all([
+    healthProbe({
+      hostname: upstreamHost,
+      port: upstreamPort,
+      method: "GET",
+      path: `${backendPath}/api/utils/env`
+    }),
+    httpMetaEnabled
+      ? healthProbe({
+          hostname: httpMetaHost,
+          port: httpMetaPort,
+          method: "GET",
+          path: "/test"
+        })
+      : Promise.resolve({ ok: true, disabled: true })
+  ]);
+
+  const value = {
+    productName,
+    ok: Boolean(core.ok && httpMeta.ok),
+    timestamp: nowIso(),
+    gateway: {
+      ok: true,
+      routeModel: "single-container-layered-gateway",
+      uptimeSeconds: Math.round(process.uptime())
+    },
+    access: {
+      enabled,
+      authenticatedSessions: "cookie"
+    },
+    api: {
+      ok: core.ok,
+      active: activeApiRequests,
+      maxConcurrent: apiMaxConcurrent,
+      maxBodyBytes: apiMaxBodyBytes,
+      upstream: `${upstreamHost}:${upstreamPort}${backendPath}`,
+      probe: core
+    },
+    httpMeta: {
+      ok: httpMeta.ok,
+      enabled: httpMetaEnabled,
+      upstream: `${httpMetaHost}:${httpMetaPort}`,
+      probe: httpMeta
+    }
+  };
+  cachedHealth = value;
+  cachedHealthAt = now;
+  return value;
+}
+
+function handleCloudspaceRoute(req, res) {
+  const url = new URL(req.url, "http://local");
+  if (req.method === "GET" && url.pathname === cloudspaceConfigPath) {
+    sendJson(res, 200, cloudspaceConfig());
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === cloudspaceHealthPath) {
+    buildHealth()
+      .then((health) => sendJson(res, health.ok ? 200 : 503, health))
+      .catch((error) => sendJson(res, 503, { ok: false, error: error.message, timestamp: nowIso() }));
+    return true;
+  }
+
+  return false;
 }
 
 function frontendBootstrapScript() {
@@ -511,6 +642,34 @@ function pipeTransformedFrontend(req, res, upstreamRes) {
 }
 
 function proxyHttp(req, res) {
+  const kind = routeKind(req);
+  if (kind === "api") {
+    if (activeApiRequests >= apiMaxConcurrent) {
+      sendJson(res, 429, {
+        error: "busy",
+        message: `${productName} is processing too many API requests; retry shortly.`,
+        active: activeApiRequests,
+        maxConcurrent: apiMaxConcurrent
+      });
+      return;
+    }
+
+    const contentLength = Number(req.headers["content-length"] || 0);
+    if (apiMaxBodyBytes > 0 && contentLength > apiMaxBodyBytes) {
+      sendJson(res, 413, { error: "request_too_large", maxBodyBytes: apiMaxBodyBytes });
+      return;
+    }
+    activeApiRequests += 1;
+  }
+
+  let released = false;
+  const release = () => {
+    if (!released && kind === "api") {
+      activeApiRequests = Math.max(0, activeApiRequests - 1);
+      released = true;
+    }
+  };
+
   const options = {
     hostname: upstreamHost,
     port: upstreamPort,
@@ -519,6 +678,8 @@ function proxyHttp(req, res) {
     headers: cleanHeaders(req.headers)
   };
   const upstreamReq = http.request(options, (upstreamRes) => {
+    res.on("finish", release);
+    res.on("close", release);
     if (shouldTransformFrontendResponse(req, upstreamRes)) {
       pipeTransformedFrontend(req, res, upstreamRes);
       return;
@@ -537,12 +698,36 @@ function proxyHttp(req, res) {
     const status = error.message.includes("upstream timeout") ? 504 : 502;
     res.writeHead(status, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
     res.end(`Upstream unavailable: ${error.message}\n`);
+    release();
   });
-  req.pipe(upstreamReq);
+
+  let bodyBytes = 0;
+  let bodyRejected = false;
+  req.on("data", (chunk) => {
+    if (bodyRejected) return;
+    bodyBytes += chunk.length;
+    if (kind === "api" && apiMaxBodyBytes > 0 && bodyBytes > apiMaxBodyBytes) {
+      bodyRejected = true;
+      upstreamReq.destroy(new Error("request body too large"));
+      if (!res.headersSent) sendJson(res, 413, { error: "request_too_large", maxBodyBytes: apiMaxBodyBytes });
+      req.destroy();
+      release();
+      return;
+    }
+    upstreamReq.write(chunk);
+  });
+  req.on("end", () => {
+    if (!bodyRejected) upstreamReq.end();
+  });
+  req.on("error", (error) => {
+    upstreamReq.destroy(error);
+    release();
+  });
 }
 
 const server = http.createServer((req, res) => {
   if (enabled && handleLockRoute(req, res)) return;
+  if (handleCloudspaceRoute(req, res)) return;
   if (enabled && !isAuthenticated(req)) {
     unauthorized(req, res);
     return;

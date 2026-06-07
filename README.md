@@ -44,6 +44,12 @@ ghcr.io/zhizhishu/cloudspace:latest
 | `ACCESS_LOCK_MAX_FRONTEND_TRANSFORM_BYTES` | `2097152` |
 | `ACCESS_LOCK_FRONTEND_CACHE_CONTROL` | `no-store` |
 | `ACCESS_LOCK_API_CACHE_CONTROL` | `no-store` |
+| `CLOUDSPACE_API_MAX_CONCURRENT` | `4` |
+| `CLOUDSPACE_API_MAX_BODY_BYTES` | `8388608` |
+| `CLOUDSPACE_CONFIG_PATH` | `/__cloudspace/config.json` |
+| `CLOUDSPACE_HEALTH_PATH` | `/__cloudspace/health` |
+| `CLOUDSPACE_HEALTH_TIMEOUT_MS` | `2500` |
+| `CLOUDSPACE_HEALTH_CACHE_MS` | `10000` |
 | `CLOUDSPACE_UPSTREAM_HOST` | `127.0.0.1` |
 | `CLOUDSPACE_UPSTREAM_PORT` | `3001` |
 | `CLOUDSPACE_BACKEND_API_HOST` | `127.0.0.1` |
@@ -62,6 +68,8 @@ ghcr.io/zhizhishu/cloudspace:latest
 | `HTTP_META_FOLDER` | `/opt/app/http-meta/meta` |
 | `HTTP_META_TEMP_FOLDER` | `/tmp/http-meta` |
 | `HTTP_META_NODE_MAX_OLD_SPACE_SIZE` | `128` |
+| `HTTP_META_RESTART_ENABLED` | `true` |
+| `HTTP_META_RESTART_DELAY_SECONDS` | `5` |
 | `CURL_CONNECT_TIMEOUT` | `10` |
 | `CURL_MAX_TIME` | `180` |
 | `SUPABASE_BACKUP_ENABLED` | `false` |
@@ -86,11 +94,24 @@ ghcr.io/zhizhishu/cloudspace:latest
 
 CloudSpace still maps a small set of internal compatibility variables for the bundled upstream core at container startup. Keep the public deployment configuration on the `CLOUDSPACE_*` variables unless you are debugging the core process directly.
 
+## Single-Container Routing Model
+
+CloudSpace stays a single container, but the access gateway separates the internal layers so frontend, backend API, health/config, and HTTP META do not trip over each other:
+
+- `/__lock/*`: access lock pages and password actions.
+- `/__cloudspace/config.json`: same-origin frontend/backend config metadata.
+- `/__cloudspace/health`: gateway/core/HTTP META health summary.
+- `/api/*`: backend API proxy lane with bounded concurrency and request-body size.
+- Everything else: frontend lane with branding/config injection and frontend cache policy.
+
+HTTP META remains internal on `127.0.0.1:9876`; it is checked by health and restarted by the startup supervisor if the helper exits.
+
 ## Subscription Stall Guards
 
 Hugging Face Spaces can still hang on very large subscription import/export, conversion, or availability-test requests when the upstream core waits on slow remote URLs. CloudSpace now adds guardrails so a bad subscription job fails with a bounded error instead of pinning the whole access gateway forever:
 
 - The access gateway gives upstream API calls up to `ACCESS_LOCK_UPSTREAM_TIMEOUT_MS` milliseconds, default `300000` (5 minutes), then returns `504`.
+- The `/api/*` lane allows up to `CLOUDSPACE_API_MAX_CONCURRENT` concurrent proxied API requests and rejects larger request bodies above `CLOUDSPACE_API_MAX_BODY_BYTES`.
 - The gateway only buffers up to `ACCESS_LOCK_MAX_FRONTEND_TRANSFORM_BYTES` while branding frontend HTML/JS; larger frontend assets pass through without transformation to avoid memory spikes.
 - Transformed frontend responses and API responses default to `Cache-Control: no-store` to avoid stale frontend/backend config and browser cache growth.
 - The bundled core, access gateway, and HTTP META helper start with separate Node heap caps.

@@ -35,6 +35,8 @@ export CLOUDSPACE_CACHE_MAX_AGE_MINUTES="${CLOUDSPACE_CACHE_MAX_AGE_MINUTES:-360
 export CLOUDSPACE_CACHE_MIN_DELETE_AGE_MINUTES="${CLOUDSPACE_CACHE_MIN_DELETE_AGE_MINUTES:-15}"
 export CLOUDSPACE_CACHE_MAX_KB="${CLOUDSPACE_CACHE_MAX_KB:-262144}"
 export CLOUDSPACE_CACHE_EMERGENCY_PURGE="${CLOUDSPACE_CACHE_EMERGENCY_PURGE:-true}"
+export HTTP_META_RESTART_ENABLED="${HTTP_META_RESTART_ENABLED:-true}"
+export HTTP_META_RESTART_DELAY_SECONDS="${HTTP_META_RESTART_DELAY_SECONDS:-5}"
 # Internal compatibility for the bundled upstream core.
 export SUB_STORE_BACKEND_API_HOST="${SUB_STORE_BACKEND_API_HOST:-$CLOUDSPACE_BACKEND_API_HOST}"
 export SUB_STORE_BACKEND_API_PORT="${SUB_STORE_BACKEND_API_PORT:-$CLOUDSPACE_BACKEND_API_PORT}"
@@ -297,16 +299,35 @@ supabase_backup_loop() {
   done
 }
 
+http_meta_supervisor() {
+  while true; do
+    META_TEMP_FOLDER="${HTTP_META_TEMP_FOLDER:-/tmp/http-meta}" \
+    META_FOLDER="${HTTP_META_FOLDER:-/opt/app/http-meta/meta}" \
+    HOST="${HTTP_META_HOST:-127.0.0.1}" \
+    PORT="${HTTP_META_PORT:-9876}" \
+    node --max-old-space-size="${HTTP_META_NODE_MAX_OLD_SPACE_SIZE}" /opt/app/http-meta/http-meta.bundle.js &
+
+    child_pid="$!"
+    trap 'kill "$child_pid" 2>/dev/null || true; wait "$child_pid" 2>/dev/null || true; exit 0' INT TERM
+    status=0
+    wait "$child_pid" || status="$?"
+    trap - INT TERM
+
+    if [ "$HTTP_META_RESTART_ENABLED" != "true" ]; then
+      echo "HTTP META exited with status ${status}; restart disabled"
+      return "$status"
+    fi
+
+    echo "HTTP META exited with status ${status}; restarting in ${HTTP_META_RESTART_DELAY_SECONDS}s" >&2
+    sleep "$HTTP_META_RESTART_DELAY_SECONDS"
+  done
+}
+
 start_http_meta() {
   [ "${HTTP_META_ENABLED:-true}" = "true" ] || return 0
   mkdir -p "${HTTP_META_TEMP_FOLDER:-/tmp/http-meta}"
 
-  META_TEMP_FOLDER="${HTTP_META_TEMP_FOLDER:-/tmp/http-meta}" \
-  META_FOLDER="${HTTP_META_FOLDER:-/opt/app/http-meta/meta}" \
-  HOST="${HTTP_META_HOST:-127.0.0.1}" \
-  PORT="${HTTP_META_PORT:-9876}" \
-  node --max-old-space-size="${HTTP_META_NODE_MAX_OLD_SPACE_SIZE}" /opt/app/http-meta/http-meta.bundle.js &
-
+  http_meta_supervisor &
   HTTP_META_PID="$!"
   sleep "${HTTP_META_START_DELAY_SECONDS:-2}"
 
