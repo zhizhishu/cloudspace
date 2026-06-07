@@ -29,6 +29,12 @@ export HTTP_META_NODE_MAX_OLD_SPACE_SIZE="${HTTP_META_NODE_MAX_OLD_SPACE_SIZE:-1
 export CURL_CONNECT_TIMEOUT="${CURL_CONNECT_TIMEOUT:-10}"
 export CURL_MAX_TIME="${CURL_MAX_TIME:-180}"
 export SUPABASE_BACKUP_MAX_BYTES="${SUPABASE_BACKUP_MAX_BYTES:-16777216}"
+export CLOUDSPACE_CACHE_CLEANUP_ENABLED="${CLOUDSPACE_CACHE_CLEANUP_ENABLED:-true}"
+export CLOUDSPACE_CACHE_CLEANUP_INTERVAL_SECONDS="${CLOUDSPACE_CACHE_CLEANUP_INTERVAL_SECONDS:-600}"
+export CLOUDSPACE_CACHE_MAX_AGE_MINUTES="${CLOUDSPACE_CACHE_MAX_AGE_MINUTES:-360}"
+export CLOUDSPACE_CACHE_MIN_DELETE_AGE_MINUTES="${CLOUDSPACE_CACHE_MIN_DELETE_AGE_MINUTES:-15}"
+export CLOUDSPACE_CACHE_MAX_KB="${CLOUDSPACE_CACHE_MAX_KB:-262144}"
+export CLOUDSPACE_CACHE_EMERGENCY_PURGE="${CLOUDSPACE_CACHE_EMERGENCY_PURGE:-true}"
 # Internal compatibility for the bundled upstream core.
 export SUB_STORE_BACKEND_API_HOST="${SUB_STORE_BACKEND_API_HOST:-$CLOUDSPACE_BACKEND_API_HOST}"
 export SUB_STORE_BACKEND_API_PORT="${SUB_STORE_BACKEND_API_PORT:-$CLOUDSPACE_BACKEND_API_PORT}"
@@ -43,12 +49,91 @@ export ACCESS_LOCK_UPSTREAM_PORT="${ACCESS_LOCK_UPSTREAM_PORT:-$SUB_STORE_BACKEN
 export ACCESS_LOCK_DATA_PATH="${ACCESS_LOCK_DATA_PATH:-$CLOUDSPACE_DATA_BASE_PATH/cloudspace-access.json}"
 
 mkdir -p "$CLOUDSPACE_DATA_BASE_PATH"
+export CLOUDSPACE_CACHE_PATHS="${CLOUDSPACE_CACHE_PATHS:-${HTTP_META_TEMP_FOLDER:-/tmp/http-meta}:/tmp/cloudspace-cache:${CLOUDSPACE_DATA_BASE_PATH}/cache:${CLOUDSPACE_DATA_BASE_PATH}/tmp:${CLOUDSPACE_DATA_BASE_PATH}/logs}"
 
 curl_with_limits() {
   curl -fsS \
     --connect-timeout "$CURL_CONNECT_TIMEOUT" \
     --max-time "$CURL_MAX_TIME" \
     "$@"
+}
+
+is_safe_cache_path() {
+  case "$1" in
+    /tmp/*|"$CLOUDSPACE_DATA_BASE_PATH"/cache|"$CLOUDSPACE_DATA_BASE_PATH"/cache/*|"$CLOUDSPACE_DATA_BASE_PATH"/tmp|"$CLOUDSPACE_DATA_BASE_PATH"/tmp/*|"$CLOUDSPACE_DATA_BASE_PATH"/logs|"$CLOUDSPACE_DATA_BASE_PATH"/logs/*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+is_http_meta_cache_path() {
+  [ "$1" = "${HTTP_META_TEMP_FOLDER:-/tmp/http-meta}" ]
+}
+
+cleanup_cache_path() {
+  dir="$1"
+  [ -n "$dir" ] || return 0
+  is_safe_cache_path "$dir" || {
+    echo "Skipping unsafe cache cleanup path: $dir" >&2
+    return 0
+  }
+
+  mkdir -p "$dir"
+
+  if [ "${CLOUDSPACE_CACHE_MAX_AGE_MINUTES}" -gt 0 ] 2>/dev/null; then
+    find "$dir" -type f -mmin +"$CLOUDSPACE_CACHE_MAX_AGE_MINUTES" -delete 2>/dev/null || true
+    find "$dir" -mindepth 1 -type d -empty -delete 2>/dev/null || true
+  fi
+
+  current_kb="$(du -sk "$dir" 2>/dev/null | awk '{print $1}')"
+  current_kb="${current_kb:-0}"
+  if [ "${CLOUDSPACE_CACHE_MAX_KB}" -gt 0 ] 2>/dev/null && [ "$current_kb" -gt "$CLOUDSPACE_CACHE_MAX_KB" ]; then
+    echo "Cache path $dir is ${current_kb}KB; trimming files older than ${CLOUDSPACE_CACHE_MIN_DELETE_AGE_MINUTES} minutes"
+    find "$dir" -type f -mmin +"$CLOUDSPACE_CACHE_MIN_DELETE_AGE_MINUTES" -delete 2>/dev/null || true
+    find "$dir" -mindepth 1 -type d -empty -delete 2>/dev/null || true
+  fi
+
+  current_kb="$(du -sk "$dir" 2>/dev/null | awk '{print $1}')"
+  current_kb="${current_kb:-0}"
+  if [ "${CLOUDSPACE_CACHE_MAX_KB}" -gt 0 ] 2>/dev/null && [ "$current_kb" -gt "$CLOUDSPACE_CACHE_MAX_KB" ]; then
+    if is_http_meta_cache_path "$dir"; then
+      echo "HTTP META cache path $dir is still ${current_kb}KB; keeping active files to avoid dropping HTTP META" >&2
+    elif [ "$CLOUDSPACE_CACHE_EMERGENCY_PURGE" = "true" ]; then
+      echo "Cache path $dir is still ${current_kb}KB; emergency purging cache files"
+      find "$dir" -type f -delete 2>/dev/null || true
+      find "$dir" -mindepth 1 -type d -empty -delete 2>/dev/null || true
+    else
+      echo "Cache path $dir is still ${current_kb}KB; emergency purge disabled" >&2
+    fi
+  fi
+}
+
+cleanup_cache_once() {
+  [ "$CLOUDSPACE_CACHE_CLEANUP_ENABLED" = "true" ] || return 0
+  old_ifs="$IFS"
+  IFS=":"
+  for dir in $CLOUDSPACE_CACHE_PATHS; do
+    cleanup_cache_path "$dir"
+  done
+  IFS="$old_ifs"
+}
+
+cache_cleanup_loop() {
+  cleanup_cache_once
+  while true; do
+    sleep "$CLOUDSPACE_CACHE_CLEANUP_INTERVAL_SECONDS"
+    cleanup_cache_once
+  done
+}
+
+start_cache_cleanup() {
+  [ "$CLOUDSPACE_CACHE_CLEANUP_ENABLED" = "true" ] || return 0
+  cache_cleanup_loop &
+  CACHE_CLEANUP_PID="$!"
+  echo "Cache cleanup enabled for: $CLOUDSPACE_CACHE_PATHS"
 }
 
 curl_to_file_with_limit() {
@@ -251,11 +336,12 @@ start_access_lock() {
 }
 
 stop_children() {
-  for pid in "${ACCESS_LOCK_PID:-}" "${SUPABASE_BACKUP_PID:-}" "${CLOUDSPACE_CORE_PID:-}" "${HTTP_META_PID:-}"; do
+  for pid in "${ACCESS_LOCK_PID:-}" "${SUPABASE_BACKUP_PID:-}" "${CLOUDSPACE_CORE_PID:-}" "${HTTP_META_PID:-}" "${CACHE_CLEANUP_PID:-}"; do
     [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
   done
   wait "${ACCESS_LOCK_PID:-}" 2>/dev/null || true
   wait "${CLOUDSPACE_CORE_PID:-}" 2>/dev/null || true
+  wait "${CACHE_CLEANUP_PID:-}" 2>/dev/null || true
 }
 trap stop_children INT TERM
 
@@ -263,8 +349,10 @@ HTTP_META_PID=""
 CLOUDSPACE_CORE_PID=""
 SUPABASE_BACKUP_PID=""
 ACCESS_LOCK_PID=""
+CACHE_CLEANUP_PID=""
 
 start_http_meta
+start_cache_cleanup
 
 if [ "$ACCESS_LOCK_ENABLED" = "true" ] || supabase_backup_enabled; then
   start_cloudspace_core

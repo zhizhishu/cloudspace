@@ -26,6 +26,8 @@ const maxFrontendTransformBytes = positiveNumber(
   process.env.ACCESS_LOCK_MAX_FRONTEND_TRANSFORM_BYTES || process.env.CLOUDSPACE_MAX_FRONTEND_TRANSFORM_BYTES,
   2097152
 );
+const frontendCacheControl = process.env.ACCESS_LOCK_FRONTEND_CACHE_CONTROL || process.env.CLOUDSPACE_FRONTEND_CACHE_CONTROL || "no-store";
+const apiCacheControl = process.env.ACCESS_LOCK_API_CACHE_CONTROL || process.env.CLOUDSPACE_API_CACHE_CONTROL || "no-store";
 
 function nowIso() {
   return new Date().toISOString();
@@ -358,6 +360,10 @@ function upstreamPath(rawPath) {
   return rawPath;
 }
 
+function isApiPath(rawPath) {
+  return rawPath === "/api" || rawPath.startsWith("/api/") || rawPath.startsWith("/api?");
+}
+
 function frontendBootstrapScript() {
   const apiName = `${productName} Local`;
   return `<script>
@@ -428,6 +434,24 @@ function shouldTransformFrontendResponse(req, upstreamRes) {
   return contentType.includes("text/html") || contentType.includes("javascript");
 }
 
+function applyCacheHeaders(headers, cacheControl) {
+  if (!cacheControl || cacheControl === "pass") return headers;
+  headers["cache-control"] = cacheControl;
+  if (cacheControl.includes("no-store")) {
+    delete headers.etag;
+    delete headers["last-modified"];
+  }
+  return headers;
+}
+
+function responseHeaders(req, upstreamRes, options = {}) {
+  const headers = { ...upstreamRes.headers };
+  if (options.dropContentLength) delete headers["content-length"];
+  if (options.frontend) applyCacheHeaders(headers, frontendCacheControl);
+  if (isApiPath(req.url)) applyCacheHeaders(headers, apiCacheControl);
+  return headers;
+}
+
 function transformFrontendBody(req, upstreamRes, body) {
   const contentType = String(upstreamRes.headers["content-type"] || "");
   if (contentType.includes("text/html")) {
@@ -461,7 +485,7 @@ function pipeTransformedFrontend(req, res, upstreamRes) {
 
     totalBytes += chunk.length;
     if (maxFrontendTransformBytes > 0 && totalBytes > maxFrontendTransformBytes) {
-      res.writeHead(upstreamRes.statusCode || 200, upstreamRes.headers);
+      res.writeHead(upstreamRes.statusCode || 200, responseHeaders(req, upstreamRes, { frontend: true }));
       for (const buffered of chunks) res.write(buffered);
       chunks.length = 0;
       res.write(chunk);
@@ -480,8 +504,7 @@ function pipeTransformedFrontend(req, res, upstreamRes) {
     let body = Buffer.concat(chunks).toString("utf8");
     body = transformFrontendBody(req, upstreamRes, body);
 
-    const headers = { ...upstreamRes.headers };
-    delete headers["content-length"];
+    const headers = responseHeaders(req, upstreamRes, { frontend: true, dropContentLength: true });
     res.writeHead(upstreamRes.statusCode || 200, headers);
     res.end(body);
   });
@@ -500,7 +523,7 @@ function proxyHttp(req, res) {
       pipeTransformedFrontend(req, res, upstreamRes);
       return;
     }
-    res.writeHead(upstreamRes.statusCode || 502, upstreamRes.headers);
+    res.writeHead(upstreamRes.statusCode || 502, responseHeaders(req, upstreamRes));
     upstreamRes.pipe(res);
   });
   upstreamReq.setTimeout(upstreamTimeoutMs, () => {
