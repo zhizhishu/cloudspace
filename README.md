@@ -39,6 +39,9 @@ ghcr.io/zhizhishu/cloudspace:latest
 | `ACCESS_LOCK_PORT` | `$PORT` or `3000` |
 | `ACCESS_LOCK_DATA_PATH` | `/opt/app/data/cloudspace-access.json` |
 | `ACCESS_LOCK_INITIAL_PASSWORD` | empty, generated on first start |
+| `ACCESS_LOCK_UPSTREAM_TIMEOUT_MS` | `300000` |
+| `ACCESS_LOCK_REQUEST_TIMEOUT_MS` | upstream timeout + `30000` |
+| `ACCESS_LOCK_MAX_FRONTEND_TRANSFORM_BYTES` | `2097152` |
 | `CLOUDSPACE_UPSTREAM_HOST` | `127.0.0.1` |
 | `CLOUDSPACE_UPSTREAM_PORT` | `3001` |
 | `CLOUDSPACE_BACKEND_API_HOST` | `127.0.0.1` |
@@ -48,11 +51,17 @@ ghcr.io/zhizhishu/cloudspace:latest
 | `CLOUDSPACE_FRONTEND_PATH` | `/opt/app/frontend` |
 | `CLOUDSPACE_DATA_BASE_PATH` | `/opt/app/data` |
 | `CLOUDSPACE_INTERNAL_API_BASE` | `http://127.0.0.1:$CLOUDSPACE_BACKEND_API_PORT$CLOUDSPACE_BACKEND_PATH` |
+| `CLOUDSPACE_BODY_JSON_LIMIT` | `8mb` |
+| `CLOUDSPACE_CORE_NODE_MAX_OLD_SPACE_SIZE` | `768` |
+| `CLOUDSPACE_ACCESS_NODE_MAX_OLD_SPACE_SIZE` | `128` |
 | `HTTP_META_ENABLED` | `true` |
 | `HTTP_META_HOST` | `127.0.0.1` |
 | `HTTP_META_PORT` | `9876` |
 | `HTTP_META_FOLDER` | `/opt/app/http-meta/meta` |
 | `HTTP_META_TEMP_FOLDER` | `/tmp/http-meta` |
+| `HTTP_META_NODE_MAX_OLD_SPACE_SIZE` | `128` |
+| `CURL_CONNECT_TIMEOUT` | `10` |
+| `CURL_MAX_TIME` | `180` |
 | `SUPABASE_BACKUP_ENABLED` | `false` |
 | `SUPABASE_URL` | empty |
 | `SUPABASE_SERVICE_ROLE_KEY` | empty |
@@ -62,10 +71,22 @@ ghcr.io/zhizhishu/cloudspace:latest
 | `SUPABASE_BACKUP_INTERVAL_SECONDS` | `300` |
 | `SUPABASE_BACKUP_INITIAL_DELAY_SECONDS` | `60` |
 | `SUPABASE_BACKUP_MIN_BYTES` | `200` |
+| `SUPABASE_BACKUP_MAX_BYTES` | `16777216` |
 | `SUPABASE_BACKUP_ALLOW_EMPTY` | `false` |
 | `SUPABASE_STATE_FILE_MAX_BYTES` | `262144` |
 
 CloudSpace still maps a small set of internal compatibility variables for the bundled upstream core at container startup. Keep the public deployment configuration on the `CLOUDSPACE_*` variables unless you are debugging the core process directly.
+
+## Subscription Stall Guards
+
+Hugging Face Spaces can still hang on very large subscription import/export, conversion, or availability-test requests when the upstream core waits on slow remote URLs. CloudSpace now adds guardrails so a bad subscription job fails with a bounded error instead of pinning the whole access gateway forever:
+
+- The access gateway gives upstream API calls up to `ACCESS_LOCK_UPSTREAM_TIMEOUT_MS` milliseconds, default `300000` (5 minutes), then returns `504`.
+- The gateway only buffers up to `ACCESS_LOCK_MAX_FRONTEND_TRANSFORM_BYTES` while branding frontend HTML/JS; larger frontend assets pass through without transformation to avoid memory spikes.
+- The bundled core, access gateway, and HTTP META helper start with separate Node heap caps.
+- Supabase restore/backup curl calls use connection/total timeouts and skip state exports above `SUPABASE_BACKUP_MAX_BYTES`.
+
+For extremely large subscription work, prefer lowering script-side `concurrency` and increasing script-side `timeout` in the CloudSpace/subscription task itself. Raising `ACCESS_LOCK_UPSTREAM_TIMEOUT_MS` is useful only when the request is slow but still making progress; if a provider URL is dead, letting it wait longer just makes the spinner feel more dramatic, which is adorable but useless.
 
 ## Access Password
 

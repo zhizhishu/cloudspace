@@ -22,6 +22,13 @@ export CLOUDSPACE_BACKEND_PATH="${CLOUDSPACE_BACKEND_PATH:-/2cXaAxRGfddmGz2yx1wA
 export CLOUDSPACE_FRONTEND_PATH="${CLOUDSPACE_FRONTEND_PATH:-/opt/app/frontend}"
 export CLOUDSPACE_DATA_BASE_PATH="${CLOUDSPACE_DATA_BASE_PATH:-/opt/app/data}"
 export CLOUDSPACE_INTERNAL_API_BASE="${CLOUDSPACE_INTERNAL_API_BASE:-http://127.0.0.1:${CLOUDSPACE_BACKEND_API_PORT}${CLOUDSPACE_BACKEND_PATH}}"
+export CLOUDSPACE_BODY_JSON_LIMIT="${CLOUDSPACE_BODY_JSON_LIMIT:-8mb}"
+export CLOUDSPACE_CORE_NODE_MAX_OLD_SPACE_SIZE="${CLOUDSPACE_CORE_NODE_MAX_OLD_SPACE_SIZE:-768}"
+export CLOUDSPACE_ACCESS_NODE_MAX_OLD_SPACE_SIZE="${CLOUDSPACE_ACCESS_NODE_MAX_OLD_SPACE_SIZE:-128}"
+export HTTP_META_NODE_MAX_OLD_SPACE_SIZE="${HTTP_META_NODE_MAX_OLD_SPACE_SIZE:-128}"
+export CURL_CONNECT_TIMEOUT="${CURL_CONNECT_TIMEOUT:-10}"
+export CURL_MAX_TIME="${CURL_MAX_TIME:-180}"
+export SUPABASE_BACKUP_MAX_BYTES="${SUPABASE_BACKUP_MAX_BYTES:-16777216}"
 # Internal compatibility for the bundled upstream core.
 export SUB_STORE_BACKEND_API_HOST="${SUB_STORE_BACKEND_API_HOST:-$CLOUDSPACE_BACKEND_API_HOST}"
 export SUB_STORE_BACKEND_API_PORT="${SUB_STORE_BACKEND_API_PORT:-$CLOUDSPACE_BACKEND_API_PORT}"
@@ -30,11 +37,29 @@ export SUB_STORE_FRONTEND_BACKEND_PATH="${SUB_STORE_FRONTEND_BACKEND_PATH:-$CLOU
 export SUB_STORE_FRONTEND_PATH="${SUB_STORE_FRONTEND_PATH:-$CLOUDSPACE_FRONTEND_PATH}"
 export SUB_STORE_DATA_BASE_PATH="${SUB_STORE_DATA_BASE_PATH:-$CLOUDSPACE_DATA_BASE_PATH}"
 export SUB_STORE_INTERNAL_API_BASE="${SUB_STORE_INTERNAL_API_BASE:-$CLOUDSPACE_INTERNAL_API_BASE}"
+export SUB_STORE_BODY_JSON_LIMIT="${SUB_STORE_BODY_JSON_LIMIT:-$CLOUDSPACE_BODY_JSON_LIMIT}"
 export ACCESS_LOCK_UPSTREAM_HOST="${ACCESS_LOCK_UPSTREAM_HOST:-127.0.0.1}"
 export ACCESS_LOCK_UPSTREAM_PORT="${ACCESS_LOCK_UPSTREAM_PORT:-$SUB_STORE_BACKEND_API_PORT}"
 export ACCESS_LOCK_DATA_PATH="${ACCESS_LOCK_DATA_PATH:-$CLOUDSPACE_DATA_BASE_PATH/cloudspace-access.json}"
 
 mkdir -p "$CLOUDSPACE_DATA_BASE_PATH"
+
+curl_with_limits() {
+  curl -fsS \
+    --connect-timeout "$CURL_CONNECT_TIMEOUT" \
+    --max-time "$CURL_MAX_TIME" \
+    "$@"
+}
+
+curl_to_file_with_limit() {
+  output_file="$1"
+  shift
+  if [ "$SUPABASE_BACKUP_MAX_BYTES" -gt 0 ] 2>/dev/null; then
+    curl_with_limits --max-filesize "$SUPABASE_BACKUP_MAX_BYTES" "$@" -o "$output_file"
+  else
+    curl_with_limits "$@" -o "$output_file"
+  fi
+}
 
 supabase_backup_enabled() {
   [ "${SUPABASE_BACKUP_ENABLED:-false}" = "true" ] \
@@ -58,7 +83,7 @@ supabase_bucket_url() {
 }
 
 ensure_supabase_bucket() {
-  if curl -fsS \
+  if curl_with_limits \
     -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
     -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
     "$(supabase_bucket_url)" >/dev/null 2>&1; then
@@ -66,7 +91,7 @@ ensure_supabase_bucket() {
   fi
 
   bucket="${SUPABASE_STORAGE_BUCKET}"
-  if printf '{"id":"%s","name":"%s","public":false}' "$bucket" "$bucket" | curl -fsS \
+  if printf '{"id":"%s","name":"%s","public":false}' "$bucket" "$bucket" | curl_with_limits \
     -X POST \
     -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
     -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
@@ -85,7 +110,7 @@ wait_for_cloudspace_core() {
   timeout="${CLOUDSPACE_BACKUP_WAIT_SECONDS:-60}"
   i=0
   while [ "$i" -lt "$timeout" ]; do
-    if curl -fsS "${CLOUDSPACE_INTERNAL_API_BASE}/api/utils/env" >/dev/null 2>&1; then
+    if curl -fsS --connect-timeout 2 --max-time 5 "${CLOUDSPACE_INTERNAL_API_BASE}/api/utils/env" >/dev/null 2>&1; then
       return 0
     fi
     i=$((i + 1))
@@ -102,11 +127,10 @@ restore_from_supabase() {
 
   tmp_state="/tmp/cloudspace-supabase-state.json"
   tmp_storage="/tmp/cloudspace-supabase-storage.json"
-  if curl -fsS \
+  if curl_to_file_with_limit "$tmp_state" \
     -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
     -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
-    "$(supabase_storage_url)" \
-    -o "$tmp_state"; then
+    "$(supabase_storage_url)"; then
     if ! node /opt/app/cloudspace-state.js restore "$tmp_state" "$CLOUDSPACE_DATA_BASE_PATH" "$tmp_storage"; then
       echo "Failed to unpack Supabase state; starting with current local data" >&2
       return 0
@@ -122,7 +146,7 @@ restore_from_supabase() {
       return 0
     fi
 
-    if { printf '{"content":"'; base64 "$tmp_storage" | tr -d '\n'; printf '"}'; } | curl -fsS \
+    if { printf '{"content":"'; base64 "$tmp_storage" | tr -d '\n'; printf '"}'; } | curl_with_limits \
       -X POST \
       -H "Content-Type: application/json" \
       --data-binary @- \
@@ -142,8 +166,8 @@ backup_to_supabase_once() {
 
   tmp_storage="/tmp/cloudspace-supabase-storage.json"
   tmp_state="/tmp/cloudspace-supabase-state.json"
-  if ! curl -fsS "${CLOUDSPACE_INTERNAL_API_BASE}/api/storage" -o "$tmp_storage"; then
-    echo "Failed to export ${CLOUDSPACE_PRODUCT_NAME} storage for Supabase backup" >&2
+  if ! curl_to_file_with_limit "$tmp_storage" "${CLOUDSPACE_INTERNAL_API_BASE}/api/storage"; then
+    echo "Failed to export ${CLOUDSPACE_PRODUCT_NAME} storage for Supabase backup, or export exceeded ${SUPABASE_BACKUP_MAX_BYTES} bytes" >&2
     return 0
   fi
 
@@ -165,7 +189,7 @@ backup_to_supabase_once() {
     return 0
   fi
 
-  if curl -fsS \
+  if curl_with_limits \
     -X POST \
     -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
     -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
@@ -196,7 +220,7 @@ start_http_meta() {
   META_FOLDER="${HTTP_META_FOLDER:-/opt/app/http-meta/meta}" \
   HOST="${HTTP_META_HOST:-127.0.0.1}" \
   PORT="${HTTP_META_PORT:-9876}" \
-  node /opt/app/http-meta/http-meta.bundle.js &
+  node --max-old-space-size="${HTTP_META_NODE_MAX_OLD_SPACE_SIZE}" /opt/app/http-meta/http-meta.bundle.js &
 
   HTTP_META_PID="$!"
   sleep "${HTTP_META_START_DELAY_SECONDS:-2}"
@@ -210,13 +234,13 @@ start_http_meta() {
 }
 
 start_cloudspace_core() {
-  node /opt/app/cloudspace-core.bundle.js &
+  node --max-old-space-size="${CLOUDSPACE_CORE_NODE_MAX_OLD_SPACE_SIZE}" /opt/app/cloudspace-core.bundle.js &
   CLOUDSPACE_CORE_PID="$!"
 }
 
 start_access_lock() {
   [ "$ACCESS_LOCK_ENABLED" = "true" ] || return 0
-  node /opt/app/cloudspace-access-proxy.js &
+  node --max-old-space-size="${CLOUDSPACE_ACCESS_NODE_MAX_OLD_SPACE_SIZE}" /opt/app/cloudspace-access-proxy.js &
   ACCESS_LOCK_PID="$!"
   sleep 1
   if ! kill -0 "$ACCESS_LOCK_PID" 2>/dev/null; then
@@ -258,5 +282,5 @@ if [ "$ACCESS_LOCK_ENABLED" = "true" ] || supabase_backup_enabled; then
     wait "$CLOUDSPACE_CORE_PID"
   fi
 else
-  exec node /opt/app/cloudspace-core.bundle.js
+  exec node --max-old-space-size="${CLOUDSPACE_CORE_NODE_MAX_OLD_SPACE_SIZE}" /opt/app/cloudspace-core.bundle.js
 fi

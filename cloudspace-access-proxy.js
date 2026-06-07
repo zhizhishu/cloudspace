@@ -14,9 +14,26 @@ const dataPath = process.env.ACCESS_LOCK_DATA_PATH || path.join(process.env.CLOU
 const cookieName = process.env.ACCESS_LOCK_COOKIE_NAME || "cloudspace_access";
 const initialPassword = process.env.ACCESS_LOCK_INITIAL_PASSWORD || process.env.ACCESS_LOCK_PASSWORD || "";
 const backendPath = normalizeBackendPath(process.env.CLOUDSPACE_BACKEND_PATH || process.env.SUB_STORE_FRONTEND_BACKEND_PATH || "/2cXaAxRGfddmGz2yx1wA");
+const upstreamTimeoutMs = positiveNumber(
+  process.env.ACCESS_LOCK_UPSTREAM_TIMEOUT_MS || process.env.CLOUDSPACE_UPSTREAM_TIMEOUT_MS,
+  300000
+);
+const requestTimeoutMs = positiveNumber(
+  process.env.ACCESS_LOCK_REQUEST_TIMEOUT_MS || process.env.CLOUDSPACE_REQUEST_TIMEOUT_MS,
+  upstreamTimeoutMs + 30000
+);
+const maxFrontendTransformBytes = positiveNumber(
+  process.env.ACCESS_LOCK_MAX_FRONTEND_TRANSFORM_BYTES || process.env.CLOUDSPACE_MAX_FRONTEND_TRANSFORM_BYTES,
+  2097152
+);
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function positiveNumber(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function normalizeBackendPath(value) {
@@ -434,8 +451,32 @@ function transformFrontendBody(req, upstreamRes, body) {
 
 function pipeTransformedFrontend(req, res, upstreamRes) {
   const chunks = [];
-  upstreamRes.on("data", (chunk) => chunks.push(chunk));
+  let totalBytes = 0;
+  let passthrough = false;
+  upstreamRes.on("data", (chunk) => {
+    if (passthrough) {
+      res.write(chunk);
+      return;
+    }
+
+    totalBytes += chunk.length;
+    if (maxFrontendTransformBytes > 0 && totalBytes > maxFrontendTransformBytes) {
+      res.writeHead(upstreamRes.statusCode || 200, upstreamRes.headers);
+      for (const buffered of chunks) res.write(buffered);
+      chunks.length = 0;
+      res.write(chunk);
+      passthrough = true;
+      return;
+    }
+
+    chunks.push(chunk);
+  });
   upstreamRes.on("end", () => {
+    if (passthrough) {
+      res.end();
+      return;
+    }
+
     let body = Buffer.concat(chunks).toString("utf8");
     body = transformFrontendBody(req, upstreamRes, body);
 
@@ -462,8 +503,16 @@ function proxyHttp(req, res) {
     res.writeHead(upstreamRes.statusCode || 502, upstreamRes.headers);
     upstreamRes.pipe(res);
   });
+  upstreamReq.setTimeout(upstreamTimeoutMs, () => {
+    upstreamReq.destroy(new Error(`upstream timeout after ${upstreamTimeoutMs} ms`));
+  });
   upstreamReq.on("error", (error) => {
-    res.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
+    if (res.headersSent) {
+      res.destroy(error);
+      return;
+    }
+    const status = error.message.includes("upstream timeout") ? 504 : 502;
+    res.writeHead(status, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
     res.end(`Upstream unavailable: ${error.message}\n`);
   });
   req.pipe(upstreamReq);
@@ -499,4 +548,9 @@ server.on("upgrade", (req, socket, head) => {
 
 server.listen(listenPort, "0.0.0.0", () => {
   console.log(`[CLOUDSPACE ACCESS] ${enabled ? "enabled" : "disabled"} on 0.0.0.0:${listenPort}, upstream ${upstreamHost}:${upstreamPort}`);
+  console.log(`[CLOUDSPACE ACCESS] upstream timeout ${upstreamTimeoutMs} ms, request timeout ${requestTimeoutMs} ms`);
 });
+
+server.requestTimeout = requestTimeoutMs;
+server.headersTimeout = Math.max(60000, requestTimeoutMs + 5000);
+server.keepAliveTimeout = positiveNumber(process.env.ACCESS_LOCK_KEEP_ALIVE_TIMEOUT_MS, 5000);
