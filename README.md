@@ -39,6 +39,7 @@ ghcr.io/zhizhishu/cloudspace:latest
 | `ACCESS_LOCK_PORT` | `$PORT` or `3000` |
 | `ACCESS_LOCK_DATA_PATH` | `/opt/app/data/cloudspace-access.json` |
 | `ACCESS_LOCK_INITIAL_PASSWORD` | empty, generated on first start |
+| `ACCESS_LOCK_COOKIE_SAMESITE` | auto (`None` on HTTPS/HF, `Lax` on local HTTP) |
 | `ACCESS_LOCK_UPSTREAM_TIMEOUT_MS` | `300000` |
 | `ACCESS_LOCK_REQUEST_TIMEOUT_MS` | upstream timeout + `30000` |
 | `ACCESS_LOCK_MAX_FRONTEND_TRANSFORM_BYTES` | `2097152` |
@@ -84,6 +85,7 @@ ghcr.io/zhizhishu/cloudspace:latest
 | `SUPABASE_BACKUP_MAX_BYTES` | `16777216` |
 | `SUPABASE_BACKUP_ALLOW_EMPTY` | `false` |
 | `SUPABASE_STATE_FILE_MAX_BYTES` | `262144` |
+| `SUPABASE_STATE_DATA_FILE_ALLOWLIST` | `github.json,github/*.json,github-*.json,*.github.json` |
 | `CLOUDSPACE_CACHE_CLEANUP_ENABLED` | `true` |
 | `CLOUDSPACE_CACHE_CLEANUP_INTERVAL_SECONDS` | `600` |
 | `CLOUDSPACE_CACHE_MAX_AGE_MINUTES` | `360` |
@@ -132,6 +134,8 @@ Use `/__lock` for normal password changes after login.
 
 If Supabase restore is enabled, the restored access-lock config is loaded before the access gateway starts. That means the password stored in the restored state remains active unless the platform secret has changed since the last applied reset.
 
+On Hugging Face, the app is displayed inside an iframe on `huggingface.co` while the app itself runs on `*.hf.space`. CloudSpace therefore uses `SameSite=None; Secure` for access cookies on HTTPS/HF requests; otherwise the browser may accept the password but drop the session cookie, causing a login loop that looks like a wrong password.
+
 ## Supabase Storage Backup
 
 CloudSpace can use Supabase Storage as an external backup target. It is not a POSIX container volume; the container starts the core service, verifies or creates a private Supabase Storage bucket, restores `storage.json` when present, then periodically exports `/api/storage` and uploads a CloudSpace state bundle back with upsert enabled.
@@ -139,7 +143,9 @@ CloudSpace can use Supabase Storage as an external backup target. It is not a PO
 The state bundle stores:
 
 - CloudSpace server-side `/api/storage` export.
-- Small state files from `/opt/app/data`, including CloudSpace restore/sync config and the access-lock config file.
+- Only small GitHub-related state files from `/opt/app/data` that match `SUPABASE_STATE_DATA_FILE_ALLOWLIST`.
+
+The access-lock password file (`cloudspace-access.json`) is intentionally excluded from Supabase backup and restore. Keep temporary access passwords local-only; do not store them in Hugging Face Secrets, Supabase state, GitHub, frontend localStorage, or repository files.
 
 Browser-local OAuth sessions, browser localStorage, and GitHub website login cookies are not server-side CloudSpace data. Those cannot be restored by Supabase on another browser or device, so GitHub may still ask for login again there. The access lock avoids relying on a browser's GitHub login for basic private access.
 

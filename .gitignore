@@ -3,3 +3,4 @@ npm-debug.log
 .DS_Store
 TASK_LOG.md
 .codex-runtime/
+LOCAL_ACCESS_PASSWORD.txt

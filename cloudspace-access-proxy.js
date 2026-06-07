@@ -165,8 +165,13 @@ function isAuthenticated(req) {
 }
 
 function cookieOptions(req) {
-  const secure = req.headers["x-forwarded-proto"] === "https" || req.socket.encrypted;
-  return `Path=/; HttpOnly; SameSite=Lax${secure ? "; Secure" : ""}`;
+  const forwardedProto = String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim().toLowerCase();
+  const forwardedHost = String(req.headers["x-forwarded-host"] || req.headers.host || "").toLowerCase();
+  const secure = forwardedProto === "https" || req.socket.encrypted || forwardedHost.endsWith(".hf.space");
+  const configuredSameSite = String(process.env.ACCESS_LOCK_COOKIE_SAMESITE || "").trim().toLowerCase();
+  const sameSite = configuredSameSite || (secure ? "none" : "lax");
+  const normalizedSameSite = sameSite === "none" ? "None" : sameSite === "strict" ? "Strict" : "Lax";
+  return `Path=/; HttpOnly; SameSite=${normalizedSameSite}${secure || normalizedSameSite === "None" ? "; Secure" : ""}`;
 }
 
 function setAuthCookie(res, req) {
