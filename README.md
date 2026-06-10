@@ -196,6 +196,27 @@ Published container image:
 ghcr.io/zhizhishu/cloudspace:latest
 ```
 
+## Deployment verification
+
+After publishing or updating the Hugging Face Space pin, verify the whole GitHub -> GHCR -> Hugging Face -> live app chain:
+
+```powershell
+.\scripts\verify-cloudspace-deploy.ps1
+```
+
+The check is read-only. It verifies that:
+
+- the latest `publish-image.yml` GitHub Actions run completed successfully for the current commit;
+- `ghcr.io/zhizhishu/cloudspace:latest` resolves to a digest;
+- the Hugging Face Space Dockerfile pins that same GHCR digest;
+- the live Space `/__cloudspace/health` reports gateway, API/core, and HTTP META as healthy.
+
+Use JSON output when another agent or script needs to consume the result:
+
+```powershell
+.\scripts\verify-cloudspace-deploy.ps1 -Json
+```
+
 ## Hugging Face Spaces
 
 Create a Docker Space and push this repository to it, or use a minimal Space repository that points at the published GHCR image. Hugging Face reads the Space configuration from the YAML block at the top of this README:

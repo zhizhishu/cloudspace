@@ -29,4 +29,10 @@ jobs:
         with:
           context: .
           push: true
-          tags: ghcr.io/zhizhishu/cloudspace:latest
+          tags: |
+            ghcr.io/zhizhishu/cloudspace:latest
+            ghcr.io/zhizhishu/cloudspace:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/zhizhishu/cloudspace
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.description=CloudSpace private subscription workspace image
