@@ -31,6 +31,7 @@ const frontendCacheControl = process.env.ACCESS_LOCK_FRONTEND_CACHE_CONTROL || p
 const apiCacheControl = process.env.ACCESS_LOCK_API_CACHE_CONTROL || process.env.CLOUDSPACE_API_CACHE_CONTROL || "no-store";
 const cloudspaceConfigPath = process.env.CLOUDSPACE_CONFIG_PATH || "/__cloudspace/config.json";
 const cloudspaceHealthPath = process.env.CLOUDSPACE_HEALTH_PATH || "/__cloudspace/health";
+const publicHealthEnabled = process.env.CLOUDSPACE_PUBLIC_HEALTH !== "false";
 const apiMaxConcurrent = positiveNumber(process.env.CLOUDSPACE_API_MAX_CONCURRENT || process.env.ACCESS_LOCK_API_MAX_CONCURRENT, 4);
 const apiMaxBodyBytes = positiveNumber(process.env.CLOUDSPACE_API_MAX_BODY_BYTES || process.env.ACCESS_LOCK_API_MAX_BODY_BYTES, 8 * 1024 * 1024);
 const cloudspaceJobsPath = normalizeBackendPath(process.env.CLOUDSPACE_JOBS_PATH || "/__cloudspace/jobs") || "/__cloudspace/jobs";
@@ -705,11 +706,21 @@ function wantsHtml(req) {
 
 function unauthorized(req, res) {
   const url = new URL(req.url, "http://local");
-  if (!isApiPath(url.pathname) && wantsHtml(req)) {
+  const isControlPath = url.pathname.startsWith("/__cloudspace");
+  if (!isApiPath(url.pathname) && !isControlPath && wantsHtml(req)) {
     redirect(res, `/__lock/login?next=${encodeURIComponent(req.url || "/")}`);
   } else {
     sendJson(res, 401, { error: "locked" });
   }
+}
+
+function protectCloudspaceRoute(req, res) {
+  if (!enabled || isAuthenticated(req)) return false;
+  const url = new URL(req.url, "http://local");
+  if (!url.pathname.startsWith("/__cloudspace")) return false;
+  if (publicHealthEnabled && req.method === "GET" && url.pathname === cloudspaceHealthPath) return false;
+  unauthorized(req, res);
+  return true;
 }
 
 function cleanHeaders(headers) {
@@ -745,8 +756,12 @@ function cloudspaceConfig() {
     productName,
     backend: {
       apiBase: "/",
-      backendPath,
       sameOrigin: true
+    },
+    access: {
+      model: "one-password-same-origin",
+      login: "/__lock/login",
+      password: "/__lock"
     },
     routes: {
       lock: "/__lock",
@@ -812,7 +827,8 @@ async function buildHealth() {
     timestamp: nowIso(),
     gateway: {
       ok: true,
-      routeModel: "single-container-layered-gateway",
+      routeModel: "single-container-unified-access-gateway",
+      accessModel: "one-password-same-origin",
       uptimeSeconds: Math.round(process.uptime())
     },
     access: {
@@ -1151,6 +1167,7 @@ ensureJobStore();
 
 const server = http.createServer((req, res) => {
   if (enabled && handleLockRoute(req, res)) return;
+  if (protectCloudspaceRoute(req, res)) return;
   if (handleCloudspaceRoute(req, res)) return;
   if (enabled && !isAuthenticated(req)) {
     unauthorized(req, res);

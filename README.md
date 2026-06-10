@@ -49,6 +49,7 @@ ghcr.io/zhizhishu/cloudspace:latest
 | `CLOUDSPACE_API_MAX_BODY_BYTES` | `8388608` |
 | `CLOUDSPACE_CONFIG_PATH` | `/__cloudspace/config.json` |
 | `CLOUDSPACE_HEALTH_PATH` | `/__cloudspace/health` |
+| `CLOUDSPACE_PUBLIC_HEALTH` | `true` |
 | `CLOUDSPACE_HEALTH_TIMEOUT_MS` | `2500` |
 | `CLOUDSPACE_HEALTH_CACHE_MS` | `10000` |
 | `CLOUDSPACE_UPSTREAM_HOST` | `127.0.0.1` |
@@ -109,15 +110,15 @@ ghcr.io/zhizhishu/cloudspace:latest
 
 CloudSpace still maps a small set of internal compatibility variables for the bundled upstream core at container startup. Keep the public deployment configuration on the `CLOUDSPACE_*` variables unless you are debugging the core process directly.
 
-## Single-Container Routing Model
+## Single-Container Access Model
 
-CloudSpace stays a single container, but the access gateway separates the internal layers so frontend, backend API, health/config, and HTTP META do not trip over each other:
+CloudSpace stays one app behind one password. Users enter the access password once on the frontend lock page; the same same-origin session then unlocks frontend pages, `/api/*`, and CloudSpace control routes. The gateway still uses internal scheduling lanes so large backend/API/HTTP META work cannot trip over the UI, but those lanes are an implementation detail rather than separate public projects:
 
 - `/__lock/*`: access lock pages and password actions.
-- `/__cloudspace/config.json`: same-origin frontend/backend config metadata.
-- `/__cloudspace/health`: gateway/core/HTTP META health summary.
-- `/__cloudspace/jobs`: authenticated async API job lane for large subscription, availability-test, and landing-test style operations.
-- `/api/*`: backend API proxy lane with bounded concurrency and request-body size.
+- `/__cloudspace/config.json`: same-origin CloudSpace config; protected by the same access cookie.
+- `/__cloudspace/health`: gateway/core/HTTP META health summary. It remains public by default for deployment checks; set `CLOUDSPACE_PUBLIC_HEALTH=false` to put it behind the same password too.
+- `/__cloudspace/jobs`: async API job lane for large subscription, availability-test, and landing-test style operations; protected by the same access cookie.
+- `/api/*`: API proxy lane with bounded concurrency and request-body size; protected by the same access cookie.
 - Everything else: frontend lane with branding/config injection and frontend cache policy.
 
 HTTP META remains internal on `127.0.0.1:9876`; it is checked by health and restarted by the startup supervisor if the helper exits.
@@ -130,7 +131,7 @@ Hugging Face Spaces can still hang on very large subscription import/export, con
 - The `/api/*` lane allows up to `CLOUDSPACE_API_MAX_CONCURRENT` concurrent proxied API requests and rejects larger request bodies above `CLOUDSPACE_API_MAX_BODY_BYTES`.
 - Large API work can be submitted to the authenticated `/__cloudspace/jobs` lane instead of keeping one browser/Hugging Face proxy request open. Jobs are queued, run with bounded concurrency, persist status under `/opt/app/data/cloudspace-jobs`, and expose a polling result URL.
 - The gateway only buffers up to `ACCESS_LOCK_MAX_FRONTEND_TRANSFORM_BYTES` while branding frontend HTML/JS; larger frontend assets pass through without transformation to avoid memory spikes.
-- Transformed frontend responses and API responses default to `Cache-Control: no-store` to avoid stale frontend/backend config and browser cache growth.
+- Transformed frontend responses and API responses default to `Cache-Control: no-store` to avoid stale same-origin config and browser cache growth.
 - The bundled core, access gateway, and HTTP META helper start with separate Node heap caps.
 - HTTP META accepts larger internal JSON payloads through `HTTP_META_BODY_JSON_LIMIT`, default `32mb`, so large node lists are not rejected by the helper's default `1mb` body parser.
 - Supabase restore/backup curl calls use connection/total timeouts and skip state exports above `SUPABASE_BACKUP_MAX_BYTES`.
