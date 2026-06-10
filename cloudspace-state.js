@@ -14,6 +14,17 @@ function readJson(file) {
   return JSON.parse(fs.readFileSync(file, "utf8"));
 }
 
+function hasMeaningfulValue(value) {
+  if (value === null || value === undefined) return false;
+  if (typeof value === "string") return value.trim().length > 0;
+  if (typeof value === "number" || typeof value === "boolean") return true;
+  if (Array.isArray(value)) return value.some(hasMeaningfulValue);
+  if (typeof value === "object") {
+    return Object.keys(value).some((key) => hasMeaningfulValue(value[key]));
+  }
+  return false;
+}
+
 function writeJson(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
@@ -157,13 +168,27 @@ function backup(storageFile, dataDir, outputFile) {
   console.log(`Packed CloudSpace state bundle with ${Object.keys(dataFiles).length} data files`);
 }
 
+function validateStorage(storageFile, minBytes = 0) {
+  const stat = fs.statSync(storageFile);
+  if (stat.size < minBytes) {
+    throw new Error(`CloudSpace storage is below minimum size: ${stat.size} < ${minBytes}`);
+  }
+  const value = readJson(storageFile);
+  if (!hasMeaningfulValue(value)) {
+    throw new Error("CloudSpace storage does not contain meaningful data");
+  }
+  console.log(`Validated CloudSpace storage (${stat.size} bytes)`);
+}
+
 try {
   if (mode === "restore") {
     restore(process.argv[3], process.argv[4], process.argv[5]);
   } else if (mode === "backup") {
     backup(process.argv[3], process.argv[4], process.argv[5]);
+  } else if (mode === "validate-storage") {
+    validateStorage(process.argv[3], Number(process.argv[4] || 0));
   } else {
-    throw new Error("Usage: node cloudspace-state.js restore <input> <dataDir> <storageOut> | backup <storage> <dataDir> <output>");
+    throw new Error("Usage: node cloudspace-state.js restore <input> <dataDir> <storageOut> | backup <storage> <dataDir> <output> | validate-storage <storage> [minBytes]");
   }
 } catch (error) {
   console.error(error.message);

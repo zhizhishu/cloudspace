@@ -30,6 +30,10 @@ export HTTP_META_NODE_MAX_OLD_SPACE_SIZE="${HTTP_META_NODE_MAX_OLD_SPACE_SIZE:-2
 export CURL_CONNECT_TIMEOUT="${CURL_CONNECT_TIMEOUT:-10}"
 export CURL_MAX_TIME="${CURL_MAX_TIME:-180}"
 export SUPABASE_BACKUP_MAX_BYTES="${SUPABASE_BACKUP_MAX_BYTES:-16777216}"
+export SUPABASE_BACKUP_REQUIRE_VALID_STORAGE="${SUPABASE_BACKUP_REQUIRE_VALID_STORAGE:-true}"
+export SUPABASE_RESTORE_REQUIRE_VALID_STORAGE="${SUPABASE_RESTORE_REQUIRE_VALID_STORAGE:-true}"
+export SUPABASE_DAILY_BACKUP_ENABLED="${SUPABASE_DAILY_BACKUP_ENABLED:-true}"
+export SUPABASE_DAILY_BACKUP_PREFIX="${SUPABASE_DAILY_BACKUP_PREFIX:-cloudspace/daily}"
 export CLOUDSPACE_CACHE_CLEANUP_ENABLED="${CLOUDSPACE_CACHE_CLEANUP_ENABLED:-true}"
 export CLOUDSPACE_CACHE_CLEANUP_INTERVAL_SECONDS="${CLOUDSPACE_CACHE_CLEANUP_INTERVAL_SECONDS:-600}"
 export CLOUDSPACE_CACHE_MAX_AGE_MINUTES="${CLOUDSPACE_CACHE_MAX_AGE_MINUTES:-360}"
@@ -161,9 +165,19 @@ supabase_object_path() {
 }
 
 supabase_storage_url() {
+  supabase_storage_url_for_object "$(supabase_object_path)"
+}
+
+supabase_storage_url_for_object() {
   bucket="${SUPABASE_STORAGE_BUCKET}"
-  object_path="$(supabase_object_path)"
+  object_path="$1"
   printf '%s/storage/v1/object/%s/%s' "${SUPABASE_URL%/}" "$bucket" "$object_path"
+}
+
+supabase_daily_object_path() {
+  prefix="${SUPABASE_DAILY_BACKUP_PREFIX:-cloudspace/daily}"
+  prefix="${prefix%/}"
+  printf '%s/%s.json' "$prefix" "$(date -u +%F)"
 }
 
 supabase_bucket_url() {
@@ -208,6 +222,12 @@ wait_for_cloudspace_core() {
   return 1
 }
 
+validate_cloudspace_storage_file() {
+  storage_file="$1"
+  min_bytes="${2:-${SUPABASE_BACKUP_MIN_BYTES:-200}}"
+  node /opt/app/cloudspace-state.js validate-storage "$storage_file" "$min_bytes" >/dev/null
+}
+
 restore_from_supabase() {
   [ "${SUPABASE_RESTORE_ON_START:-true}" = "true" ] || return 0
   wait_for_cloudspace_core || return 0
@@ -231,6 +251,12 @@ restore_from_supabase() {
 
     if [ "$(wc -c < "$tmp_storage" | tr -d ' ')" -lt "${SUPABASE_BACKUP_MIN_BYTES:-200}" ]; then
       echo "Supabase backup is too small; skipping ${CLOUDSPACE_PRODUCT_NAME} storage restore"
+      return 0
+    fi
+
+    if [ "${SUPABASE_RESTORE_REQUIRE_VALID_STORAGE:-true}" = "true" ] \
+      && ! validate_cloudspace_storage_file "$tmp_storage" "${SUPABASE_BACKUP_MIN_BYTES:-200}"; then
+      echo "Supabase backup does not contain valid ${CLOUDSPACE_PRODUCT_NAME} storage; skipping restore" >&2
       return 0
     fi
 
@@ -265,6 +291,12 @@ backup_to_supabase_once() {
     return 0
   fi
 
+  if [ "${SUPABASE_BACKUP_REQUIRE_VALID_STORAGE:-true}" = "true" ] \
+    && ! validate_cloudspace_storage_file "$tmp_storage" "${SUPABASE_BACKUP_MIN_BYTES:-200}"; then
+    echo "${CLOUDSPACE_PRODUCT_NAME} export is not valid storage; skipping backup to avoid overwriting good data" >&2
+    return 0
+  fi
+
   if ! node /opt/app/cloudspace-state.js backup "$tmp_storage" "$CLOUDSPACE_DATA_BASE_PATH" "$tmp_state"; then
     echo "Failed to pack Supabase state" >&2
     return 0
@@ -274,10 +306,8 @@ backup_to_supabase_once() {
   old_hash=""
   [ -f /tmp/cloudspace-supabase-backup.sha256 ] && old_hash="$(cat /tmp/cloudspace-supabase-backup.sha256)"
   if [ "$new_hash" = "$old_hash" ]; then
-    return 0
-  fi
-
-  if curl_with_limits \
+    uploaded_latest="false"
+  elif curl_with_limits \
     -X POST \
     -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
     -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
@@ -287,8 +317,32 @@ backup_to_supabase_once() {
     "$(supabase_storage_url)" >/dev/null; then
     printf '%s' "$new_hash" > /tmp/cloudspace-supabase-backup.sha256
     echo "Backed up ${CLOUDSPACE_PRODUCT_NAME} state to Supabase Storage (${bytes} storage bytes)"
+    uploaded_latest="true"
   else
     echo "Failed to upload ${CLOUDSPACE_PRODUCT_NAME} state to Supabase Storage" >&2
+    uploaded_latest="false"
+  fi
+
+  if [ "${SUPABASE_DAILY_BACKUP_ENABLED:-true}" = "true" ]; then
+    today="$(date -u +%F)"
+    last_daily=""
+    [ -f /tmp/cloudspace-supabase-daily.date ] && last_daily="$(cat /tmp/cloudspace-supabase-daily.date)"
+    if [ "$today" != "$last_daily" ] || [ "$uploaded_latest" = "true" ]; then
+      daily_object="$(supabase_daily_object_path)"
+      if curl_with_limits \
+        -X POST \
+        -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
+        -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
+        -H "x-upsert: true" \
+        -H "Content-Type: application/json" \
+        --data-binary @"$tmp_state" \
+        "$(supabase_storage_url_for_object "$daily_object")" >/dev/null; then
+        printf '%s' "$today" > /tmp/cloudspace-supabase-daily.date
+        echo "Backed up ${CLOUDSPACE_PRODUCT_NAME} daily state snapshot to Supabase Storage: ${daily_object}"
+      else
+        echo "Failed to upload ${CLOUDSPACE_PRODUCT_NAME} daily state snapshot to Supabase Storage: ${daily_object}" >&2
+      fi
+    fi
   fi
 }
 

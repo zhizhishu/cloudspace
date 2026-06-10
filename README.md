@@ -63,6 +63,14 @@ ghcr.io/zhizhishu/cloudspace:latest
 | `CLOUDSPACE_BODY_JSON_LIMIT` | `8mb` |
 | `CLOUDSPACE_CORE_NODE_MAX_OLD_SPACE_SIZE` | `768` |
 | `CLOUDSPACE_ACCESS_NODE_MAX_OLD_SPACE_SIZE` | `128` |
+| `CLOUDSPACE_JOBS_PATH` | `/__cloudspace/jobs` |
+| `CLOUDSPACE_JOB_ENABLED` | `true` |
+| `CLOUDSPACE_JOB_MAX_CONCURRENT` | `2` |
+| `CLOUDSPACE_JOB_MAX_QUEUE` | `20` |
+| `CLOUDSPACE_JOB_MAX_BODY_BYTES` | `67108864` |
+| `CLOUDSPACE_JOB_RESULT_MAX_BYTES` | `67108864` |
+| `CLOUDSPACE_JOB_TIMEOUT_MS` | `300000` |
+| `CLOUDSPACE_JOB_RETENTION_MS` | `86400000` |
 | `HTTP_META_ENABLED` | `true` |
 | `HTTP_META_HOST` | `127.0.0.1` |
 | `HTTP_META_PORT` | `9876` |
@@ -87,6 +95,10 @@ ghcr.io/zhizhishu/cloudspace:latest
 | `SUPABASE_BACKUP_ALLOW_EMPTY` | `false` |
 | `SUPABASE_STATE_FILE_MAX_BYTES` | `262144` |
 | `SUPABASE_STATE_DATA_FILE_ALLOWLIST` | `github.json,github/*.json,github-*.json,*.github.json` |
+| `SUPABASE_BACKUP_REQUIRE_VALID_STORAGE` | `true` |
+| `SUPABASE_RESTORE_REQUIRE_VALID_STORAGE` | `true` |
+| `SUPABASE_DAILY_BACKUP_ENABLED` | `true` |
+| `SUPABASE_DAILY_BACKUP_PREFIX` | `cloudspace/daily` |
 | `CLOUDSPACE_CACHE_CLEANUP_ENABLED` | `true` |
 | `CLOUDSPACE_CACHE_CLEANUP_INTERVAL_SECONDS` | `600` |
 | `CLOUDSPACE_CACHE_MAX_AGE_MINUTES` | `360` |
@@ -104,6 +116,7 @@ CloudSpace stays a single container, but the access gateway separates the intern
 - `/__lock/*`: access lock pages and password actions.
 - `/__cloudspace/config.json`: same-origin frontend/backend config metadata.
 - `/__cloudspace/health`: gateway/core/HTTP META health summary.
+- `/__cloudspace/jobs`: authenticated async API job lane for large subscription, availability-test, and landing-test style operations.
 - `/api/*`: backend API proxy lane with bounded concurrency and request-body size.
 - Everything else: frontend lane with branding/config injection and frontend cache policy.
 
@@ -115,6 +128,7 @@ Hugging Face Spaces can still hang on very large subscription import/export, con
 
 - The access gateway gives upstream API calls up to `ACCESS_LOCK_UPSTREAM_TIMEOUT_MS` milliseconds, default `300000` (5 minutes), then returns `504`.
 - The `/api/*` lane allows up to `CLOUDSPACE_API_MAX_CONCURRENT` concurrent proxied API requests and rejects larger request bodies above `CLOUDSPACE_API_MAX_BODY_BYTES`.
+- Large API work can be submitted to the authenticated `/__cloudspace/jobs` lane instead of keeping one browser/Hugging Face proxy request open. Jobs are queued, run with bounded concurrency, persist status under `/opt/app/data/cloudspace-jobs`, and expose a polling result URL.
 - The gateway only buffers up to `ACCESS_LOCK_MAX_FRONTEND_TRANSFORM_BYTES` while branding frontend HTML/JS; larger frontend assets pass through without transformation to avoid memory spikes.
 - Transformed frontend responses and API responses default to `Cache-Control: no-store` to avoid stale frontend/backend config and browser cache growth.
 - The bundled core, access gateway, and HTTP META helper start with separate Node heap caps.
@@ -150,6 +164,12 @@ The state bundle stores:
 The access-lock password file (`cloudspace-access.json`) is intentionally excluded from Supabase backup and restore. Keep temporary access passwords local-only; do not store them in Hugging Face Secrets, Supabase state, GitHub, frontend localStorage, or repository files.
 
 Browser-local OAuth sessions, browser localStorage, and GitHub website login cookies are not server-side CloudSpace data. Those cannot be restored by Supabase on another browser or device, so GitHub may still ask for login again there. The access lock avoids relying on a browser's GitHub login for basic private access.
+
+Backup safety:
+
+- Restore and backup both validate that exported CloudSpace storage is meaningful before applying or uploading it.
+- Empty or malformed exports are skipped by default, so a transient backend failure should not overwrite the last good Supabase state.
+- A daily snapshot is also written to `SUPABASE_DAILY_BACKUP_PREFIX/YYYY-MM-DD.json` when Supabase backup is enabled. Keep this prefix private because it contains server-side CloudSpace state.
 
 Create a Supabase project, then set:
 

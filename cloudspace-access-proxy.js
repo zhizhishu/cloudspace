@@ -10,7 +10,8 @@ const enabled = process.env.ACCESS_LOCK_ENABLED !== "false";
 const listenPort = Number(process.env.ACCESS_LOCK_PORT || process.env.PORT || 3000);
 const upstreamHost = process.env.ACCESS_LOCK_UPSTREAM_HOST || process.env.CLOUDSPACE_UPSTREAM_HOST || "127.0.0.1";
 const upstreamPort = Number(process.env.ACCESS_LOCK_UPSTREAM_PORT || process.env.CLOUDSPACE_BACKEND_API_PORT || 3001);
-const dataPath = process.env.ACCESS_LOCK_DATA_PATH || path.join(process.env.CLOUDSPACE_DATA_BASE_PATH || "/opt/app/data", "cloudspace-access.json");
+const dataBasePath = process.env.CLOUDSPACE_DATA_BASE_PATH || "/opt/app/data";
+const dataPath = process.env.ACCESS_LOCK_DATA_PATH || path.join(dataBasePath, "cloudspace-access.json");
 const cookieName = process.env.ACCESS_LOCK_COOKIE_NAME || "cloudspace_access";
 const initialPassword = process.env.ACCESS_LOCK_INITIAL_PASSWORD || process.env.ACCESS_LOCK_PASSWORD || "";
 const backendPath = normalizeBackendPath(process.env.CLOUDSPACE_BACKEND_PATH || process.env.SUB_STORE_FRONTEND_BACKEND_PATH || "/2cXaAxRGfddmGz2yx1wA");
@@ -32,14 +33,26 @@ const cloudspaceConfigPath = process.env.CLOUDSPACE_CONFIG_PATH || "/__cloudspac
 const cloudspaceHealthPath = process.env.CLOUDSPACE_HEALTH_PATH || "/__cloudspace/health";
 const apiMaxConcurrent = positiveNumber(process.env.CLOUDSPACE_API_MAX_CONCURRENT || process.env.ACCESS_LOCK_API_MAX_CONCURRENT, 4);
 const apiMaxBodyBytes = positiveNumber(process.env.CLOUDSPACE_API_MAX_BODY_BYTES || process.env.ACCESS_LOCK_API_MAX_BODY_BYTES, 8 * 1024 * 1024);
+const cloudspaceJobsPath = normalizeBackendPath(process.env.CLOUDSPACE_JOBS_PATH || "/__cloudspace/jobs") || "/__cloudspace/jobs";
+const jobStoreDir = process.env.CLOUDSPACE_JOB_DIR || path.join(dataBasePath, "cloudspace-jobs");
+const jobEnabled = process.env.CLOUDSPACE_JOB_ENABLED !== "false";
+const jobMaxConcurrent = positiveNumber(process.env.CLOUDSPACE_JOB_MAX_CONCURRENT, 2);
+const jobMaxQueue = positiveNumber(process.env.CLOUDSPACE_JOB_MAX_QUEUE, 20);
+const jobMaxBodyBytes = positiveNumber(process.env.CLOUDSPACE_JOB_MAX_BODY_BYTES, 64 * 1024 * 1024);
+const jobResultMaxBytes = positiveNumber(process.env.CLOUDSPACE_JOB_RESULT_MAX_BYTES, 64 * 1024 * 1024);
+const jobTimeoutMs = positiveNumber(process.env.CLOUDSPACE_JOB_TIMEOUT_MS, upstreamTimeoutMs);
+const jobRetentionMs = positiveNumber(process.env.CLOUDSPACE_JOB_RETENTION_MS, 24 * 60 * 60 * 1000);
 const httpMetaEnabled = process.env.HTTP_META_ENABLED !== "false";
 const httpMetaHost = process.env.HTTP_META_HOST || "127.0.0.1";
 const httpMetaPort = Number(process.env.HTTP_META_PORT || 9876);
 const healthTimeoutMs = positiveNumber(process.env.CLOUDSPACE_HEALTH_TIMEOUT_MS, 2500);
 const healthCacheMs = positiveNumber(process.env.CLOUDSPACE_HEALTH_CACHE_MS, 10000);
 let activeApiRequests = 0;
+let activeJobs = 0;
 let cachedHealth = null;
 let cachedHealthAt = 0;
+const jobs = new Map();
+const jobQueue = [];
 
 function nowIso() {
   return new Date().toISOString();
@@ -258,6 +271,341 @@ function sendJson(res, status, value) {
   res.end(JSON.stringify(value));
 }
 
+function safeJobId(value) {
+  const id = String(value || "");
+  return /^[a-zA-Z0-9_-]{8,80}$/.test(id) ? id : "";
+}
+
+function jobMetaFile(id) {
+  return path.join(jobStoreDir, `${id}.json`);
+}
+
+function jobResultFile(id) {
+  return path.join(jobStoreDir, `${id}.body`);
+}
+
+function ensureJobStore() {
+  if (!jobEnabled) return;
+  fs.mkdirSync(jobStoreDir, { recursive: true });
+  for (const entry of fs.readdirSync(jobStoreDir, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+    try {
+      const job = JSON.parse(fs.readFileSync(path.join(jobStoreDir, entry.name), "utf8"));
+      if (!safeJobId(job.id)) continue;
+      if (["queued", "running"].includes(job.status)) {
+        job.status = "aborted";
+        job.finishedAt = nowIso();
+        job.error = "Gateway restarted before this job finished.";
+        writeJob(job);
+      }
+      jobs.set(job.id, job);
+    } catch (_) {}
+  }
+  cleanupOldJobs();
+}
+
+function writeJob(job) {
+  if (!jobEnabled) return;
+  fs.mkdirSync(jobStoreDir, { recursive: true });
+  atomicWriteJson(jobMetaFile(job.id), job);
+}
+
+function deleteJob(id) {
+  jobs.delete(id);
+  for (const file of [jobMetaFile(id), jobResultFile(id)]) {
+    try {
+      fs.unlinkSync(file);
+    } catch (_) {}
+  }
+}
+
+function cleanupOldJobs() {
+  if (!jobEnabled || jobRetentionMs <= 0) return;
+  const cutoff = Date.now() - jobRetentionMs;
+  for (const [id, job] of jobs.entries()) {
+    if (["queued", "running"].includes(job.status)) continue;
+    const finished = Date.parse(job.finishedAt || job.updatedAt || job.createdAt || 0);
+    if (Number.isFinite(finished) && finished > 0 && finished < cutoff) deleteJob(id);
+  }
+}
+
+function publicJob(job) {
+  return {
+    id: job.id,
+    status: job.status,
+    ok: job.ok,
+    method: job.method,
+    path: job.path,
+    createdAt: job.createdAt,
+    startedAt: job.startedAt,
+    updatedAt: job.updatedAt,
+    finishedAt: job.finishedAt,
+    statusCode: job.statusCode,
+    responseBytes: job.responseBytes,
+    error: job.error,
+    resultUrl: job.status === "succeeded" || job.status === "failed_with_response" ? `${cloudspaceJobsPath}/${job.id}/result` : undefined
+  };
+}
+
+function readRequestBuffer(req, maxBytes) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let total = 0;
+    req.on("data", (chunk) => {
+      total += chunk.length;
+      if (maxBytes > 0 && total > maxBytes) {
+        reject(new Error(`request body too large; max ${maxBytes} bytes`));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", reject);
+  });
+}
+
+function parseJsonBuffer(buffer) {
+  if (!buffer || buffer.length === 0) return {};
+  return JSON.parse(buffer.toString("utf8"));
+}
+
+function jobBodyBuffer(payload, headers) {
+  if (typeof payload.bodyBase64 === "string") {
+    return Buffer.from(payload.bodyBase64, "base64");
+  }
+  if (payload.body === undefined || payload.body === null) return Buffer.alloc(0);
+  if (Buffer.isBuffer(payload.body)) return payload.body;
+  if (typeof payload.body === "string") {
+    if (payload.bodyEncoding === "base64") return Buffer.from(payload.body, "base64");
+    if (!headers["content-type"]) headers["content-type"] = "text/plain; charset=utf-8";
+    return Buffer.from(payload.body, "utf8");
+  }
+  if (!headers["content-type"]) headers["content-type"] = "application/json";
+  return Buffer.from(JSON.stringify(payload.body), "utf8");
+}
+
+function cleanJobHeaders(inputHeaders) {
+  const out = {};
+  const headers = inputHeaders && typeof inputHeaders === "object" ? inputHeaders : {};
+  const blocked = new Set(["connection", "content-length", "cookie", "host", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade", "authorization"]);
+  for (const [rawName, rawValue] of Object.entries(headers)) {
+    const name = String(rawName).toLowerCase();
+    if (blocked.has(name)) continue;
+    if (rawValue === undefined || rawValue === null) continue;
+    out[name] = Array.isArray(rawValue) ? rawValue.map(String).join(", ") : String(rawValue);
+  }
+  return out;
+}
+
+function makeJob(payload) {
+  const method = String(payload.method || "POST").toUpperCase();
+  if (!["GET", "POST", "PUT", "PATCH", "DELETE"].includes(method)) {
+    throw new Error(`Unsupported job method: ${method}`);
+  }
+  const rawPath = String(payload.path || "");
+  if (!isApiPath(new URL(rawPath, "http://local").pathname)) {
+    throw new Error("CloudSpace jobs may only target /api routes.");
+  }
+  const headers = cleanJobHeaders(payload.headers);
+  const body = jobBodyBuffer(payload, headers);
+  if (jobMaxBodyBytes > 0 && body.length > jobMaxBodyBytes) {
+    throw new Error(`Job body too large; max ${jobMaxBodyBytes} bytes.`);
+  }
+  if (body.length > 0) headers["content-length"] = String(body.length);
+  const id = crypto.randomBytes(12).toString("base64url");
+  return {
+    id,
+    status: "queued",
+    ok: false,
+    method,
+    path: rawPath,
+    headers,
+    bodyBase64: body.toString("base64"),
+    bodyBytes: body.length,
+    timeoutMs: positiveNumber(payload.timeoutMs, jobTimeoutMs),
+    createdAt: nowIso(),
+    updatedAt: nowIso()
+  };
+}
+
+function enqueueJob(job) {
+  if (jobQueue.length >= jobMaxQueue) {
+    throw new Error(`${productName} job queue is full; retry shortly.`);
+  }
+  jobs.set(job.id, job);
+  jobQueue.push(job.id);
+  writeJob(job);
+  pumpJobQueue();
+  return job;
+}
+
+function pumpJobQueue() {
+  if (!jobEnabled) return;
+  while (activeJobs < jobMaxConcurrent && jobQueue.length > 0) {
+    const id = jobQueue.shift();
+    const job = jobs.get(id);
+    if (!job || job.status !== "queued") continue;
+    activeJobs += 1;
+    runJob(job).finally(() => {
+      activeJobs = Math.max(0, activeJobs - 1);
+      pumpJobQueue();
+    });
+  }
+}
+
+function runJob(job) {
+  job.status = "running";
+  job.startedAt = nowIso();
+  job.updatedAt = job.startedAt;
+  writeJob(job);
+
+  return executeJobRequest(job)
+    .then((result) => {
+      fs.writeFileSync(jobResultFile(job.id), result.body);
+      job.statusCode = result.statusCode;
+      job.responseBytes = result.body.length;
+      job.responseHeaders = result.headers;
+      job.ok = result.statusCode >= 200 && result.statusCode < 400;
+      job.status = job.ok ? "succeeded" : "failed_with_response";
+      job.finishedAt = nowIso();
+      job.updatedAt = job.finishedAt;
+      delete job.bodyBase64;
+      writeJob(job);
+    })
+    .catch((error) => {
+      job.status = "failed";
+      job.ok = false;
+      job.error = error.message;
+      job.finishedAt = nowIso();
+      job.updatedAt = job.finishedAt;
+      delete job.bodyBase64;
+      writeJob(job);
+    });
+}
+
+function executeJobRequest(job) {
+  return new Promise((resolve, reject) => {
+    const body = Buffer.from(job.bodyBase64 || "", "base64");
+    const options = {
+      hostname: upstreamHost,
+      port: upstreamPort,
+      method: job.method,
+      path: upstreamPath(job.path),
+      headers: {
+        ...job.headers,
+        host: `${upstreamHost}:${upstreamPort}`
+      }
+    };
+    const upstreamReq = http.request(options, (upstreamRes) => {
+      const chunks = [];
+      let total = 0;
+      upstreamRes.on("data", (chunk) => {
+        total += chunk.length;
+        if (jobResultMaxBytes > 0 && total > jobResultMaxBytes) {
+          upstreamReq.destroy(new Error(`job response too large; max ${jobResultMaxBytes} bytes`));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      upstreamRes.on("end", () => {
+        const headers = { ...upstreamRes.headers };
+        delete headers["transfer-encoding"];
+        resolve({ statusCode: upstreamRes.statusCode || 502, headers, body: Buffer.concat(chunks) });
+      });
+    });
+    upstreamReq.setTimeout(job.timeoutMs, () => upstreamReq.destroy(new Error(`job upstream timeout after ${job.timeoutMs} ms`)));
+    upstreamReq.on("error", reject);
+    upstreamReq.end(body);
+  });
+}
+
+function handleJobsRoute(req, res, url) {
+  if (!url.pathname.startsWith(cloudspaceJobsPath)) return false;
+  if (!jobEnabled) {
+    sendJson(res, 404, { error: "jobs_disabled" });
+    return true;
+  }
+  if (enabled && !isAuthenticated(req)) {
+    sendJson(res, 401, { error: "locked" });
+    return true;
+  }
+
+  cleanupOldJobs();
+  const suffix = url.pathname.slice(cloudspaceJobsPath.length).replace(/^\/+/, "");
+  const parts = suffix ? suffix.split("/") : [];
+
+  if (req.method === "GET" && parts.length === 0) {
+    const values = Array.from(jobs.values())
+      .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+      .slice(0, 100)
+      .map(publicJob);
+    sendJson(res, 200, {
+      productName,
+      enabled: jobEnabled,
+      active: activeJobs,
+      queued: jobQueue.length,
+      maxConcurrent: jobMaxConcurrent,
+      maxQueue: jobMaxQueue,
+      maxBodyBytes: jobMaxBodyBytes,
+      resultMaxBytes: jobResultMaxBytes,
+      jobs: values
+    });
+    return true;
+  }
+
+  if (req.method === "POST" && (parts.length === 0 || (parts.length === 1 && parts[0] === "api"))) {
+    readRequestBuffer(req, jobMaxBodyBytes)
+      .then(parseJsonBuffer)
+      .then((payload) => enqueueJob(makeJob(payload)))
+      .then((job) => sendJson(res, 202, { job: publicJob(job) }))
+      .catch((error) => sendJson(res, error.message.includes("queue is full") ? 429 : 400, { error: "job_rejected", message: error.message }));
+    return true;
+  }
+
+  const id = safeJobId(parts[0]);
+  if (!id) {
+    sendJson(res, 404, { error: "job_not_found" });
+    return true;
+  }
+  const job = jobs.get(id);
+  if (!job) {
+    sendJson(res, 404, { error: "job_not_found" });
+    return true;
+  }
+
+  if (req.method === "GET" && parts.length === 1) {
+    sendJson(res, 200, { job: publicJob(job) });
+    return true;
+  }
+
+  if (req.method === "GET" && parts.length === 2 && parts[1] === "result") {
+    if (!fs.existsSync(jobResultFile(id))) {
+      sendJson(res, 404, { error: "job_result_not_ready", job: publicJob(job) });
+      return true;
+    }
+    const headers = { ...(job.responseHeaders || {}) };
+    applyCacheHeaders(headers, "no-store");
+    headers["content-length"] = String(fs.statSync(jobResultFile(id)).size);
+    res.writeHead(job.statusCode || 200, headers);
+    fs.createReadStream(jobResultFile(id)).pipe(res);
+    return true;
+  }
+
+  if (req.method === "DELETE" && parts.length === 1) {
+    if (["queued", "running"].includes(job.status)) {
+      sendJson(res, 409, { error: "job_active", message: "Active jobs cannot be deleted." });
+      return true;
+    }
+    deleteJob(id);
+    sendJson(res, 200, { ok: true, deleted: id });
+    return true;
+  }
+
+  sendJson(res, 404, { error: "job_not_found" });
+  return true;
+}
+
 function redirect(res, location) {
   res.writeHead(303, { location, "cache-control": "no-store" });
   res.end();
@@ -404,12 +752,20 @@ function cloudspaceConfig() {
       lock: "/__lock",
       health: cloudspaceHealthPath,
       config: cloudspaceConfigPath,
-      api: "/api"
+      api: "/api",
+      jobs: cloudspaceJobsPath
     },
     httpMeta: {
       enabled: httpMetaEnabled,
       host: "127.0.0.1",
       port: httpMetaPort
+    },
+    jobs: {
+      enabled: jobEnabled,
+      maxConcurrent: jobMaxConcurrent,
+      maxQueue: jobMaxQueue,
+      maxBodyBytes: jobMaxBodyBytes,
+      resultMaxBytes: jobResultMaxBytes
     }
   };
 }
@@ -471,6 +827,15 @@ async function buildHealth() {
       upstream: `${upstreamHost}:${upstreamPort}${backendPath}`,
       probe: core
     },
+    jobs: {
+      enabled: jobEnabled,
+      active: activeJobs,
+      queued: jobQueue.length,
+      maxConcurrent: jobMaxConcurrent,
+      maxQueue: jobMaxQueue,
+      maxBodyBytes: jobMaxBodyBytes,
+      resultMaxBytes: jobResultMaxBytes
+    },
     httpMeta: {
       ok: httpMeta.ok,
       enabled: httpMetaEnabled,
@@ -485,6 +850,8 @@ async function buildHealth() {
 
 function handleCloudspaceRoute(req, res) {
   const url = new URL(req.url, "http://local");
+  if (handleJobsRoute(req, res, url)) return true;
+
   if (req.method === "GET" && url.pathname === cloudspaceConfigPath) {
     sendJson(res, 200, cloudspaceConfig());
     return true;
@@ -507,6 +874,13 @@ function frontendBootstrapScript() {
   try {
     const desiredHostAPI = { current: ${JSON.stringify(apiName)}, apis: [{ name: ${JSON.stringify(apiName)}, url: "/" }] };
     const desiredHostAPIValue = JSON.stringify(desiredHostAPI);
+    const cloudspaceName = ${JSON.stringify(productName)};
+    const brandValue = (value) => String(value || "")
+      .replaceAll("Sub Store", cloudspaceName)
+      .replaceAll("Sub-Store", cloudspaceName)
+      .replaceAll("SubStore", cloudspaceName)
+      .replaceAll("sub-store", "cloudspace")
+      .replaceAll("sub.store", "cloudspace.local");
     const syncCloudspaceBackend = () => {
       Storage.prototype.setItem.call(localStorage, "hostAPI", desiredHostAPIValue);
       Storage.prototype.setItem.call(localStorage, "backendConfigured", "true");
@@ -526,6 +900,7 @@ function frontendBootstrapScript() {
     const originalClear = Storage.prototype.clear;
     Storage.prototype.setItem = function (key, value) {
       if (key === "hostAPI" && shouldRewriteHostAPI(value)) value = desiredHostAPIValue;
+      if (typeof value === "string") value = brandValue(value);
       return originalSetItem.call(this, key, value);
     };
     Storage.prototype.removeItem = function (key) {
@@ -542,10 +917,52 @@ function frontendBootstrapScript() {
     syncCloudspaceBackend();
     window.addEventListener("storage", syncCloudspaceBackend);
     document.addEventListener("DOMContentLoaded", syncCloudspaceBackend);
+    const brandAttributes = ["title", "aria-label", "placeholder", "alt", "value"];
+    const brandNode = (root) => {
+      if (!root || root.nodeType === Node.COMMENT_NODE) return;
+      if (root.nodeType === Node.TEXT_NODE) {
+        const next = brandValue(root.nodeValue);
+        if (next !== root.nodeValue) root.nodeValue = next;
+        return;
+      }
+      if (!root.querySelectorAll) return;
+      const elements = [root, ...root.querySelectorAll("*")];
+      for (const element of elements) {
+        if (["SCRIPT", "STYLE", "TEXTAREA"].includes(element.tagName)) continue;
+        for (const attr of brandAttributes) {
+          if (element.hasAttribute && element.hasAttribute(attr)) {
+            const current = element.getAttribute(attr);
+            const next = brandValue(current);
+            if (next !== current) element.setAttribute(attr, next);
+          }
+        }
+      }
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+        acceptNode(node) {
+          const parent = node.parentElement;
+          if (parent && ["SCRIPT", "STYLE", "TEXTAREA"].includes(parent.tagName)) return NodeFilter.FILTER_REJECT;
+          return NodeFilter.FILTER_ACCEPT;
+        }
+      });
+      const nodes = [];
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) nodes.push(node);
+      for (const node of nodes) {
+        const next = brandValue(node.nodeValue);
+        if (next !== node.nodeValue) node.nodeValue = next;
+      }
+    };
+    document.addEventListener("DOMContentLoaded", () => brandNode(document.body || document.documentElement));
+    new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        for (const node of mutation.addedNodes) brandNode(node);
+        if (mutation.type === "characterData") brandNode(mutation.target);
+      }
+    }).observe(document.documentElement, { childList: true, subtree: true, characterData: true });
     setInterval(() => {
       if (shouldRewriteHostAPI(localStorage.getItem("hostAPI")) || localStorage.getItem("backendConfigured") !== "true" || localStorage.getItem("magicPathConfigured") !== "true") {
         syncCloudspaceBackend();
       }
+      brandNode(document.body || document.documentElement);
     }, 250);
     document.title = ${JSON.stringify(productName)};
   } catch (_) {}
@@ -729,6 +1146,8 @@ function proxyHttp(req, res) {
     release();
   });
 }
+
+ensureJobStore();
 
 const server = http.createServer((req, res) => {
   if (enabled && handleLockRoute(req, res)) return;
