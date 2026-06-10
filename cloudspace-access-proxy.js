@@ -700,14 +700,27 @@ function handleLockRoute(req, res) {
 }
 
 function wantsHtml(req) {
-  const accept = req.headers.accept || "";
-  return accept.includes("text/html") || accept.includes("*/*");
+  const accept = String(req.headers.accept || "");
+  return accept.includes("text/html");
+}
+
+function isFrontendDocumentPath(pathname) {
+  if (!pathname || pathname === "/") return true;
+  if (pathname.startsWith("/__lock") || pathname.startsWith("/__cloudspace") || isApiPath(pathname)) return false;
+  const basename = pathname.split("/").pop() || "";
+  return !basename.includes(".") || basename.endsWith(".html") || basename.endsWith(".htm");
+}
+
+function isBrowserNavigation(req, url) {
+  if (!["GET", "HEAD"].includes(req.method)) return false;
+  const fetchMode = String(req.headers["sec-fetch-mode"] || "").toLowerCase();
+  const fetchDest = String(req.headers["sec-fetch-dest"] || "").toLowerCase();
+  return fetchMode === "navigate" || ["document", "iframe", "frame"].includes(fetchDest) || wantsHtml(req) || isFrontendDocumentPath(url.pathname);
 }
 
 function unauthorized(req, res) {
   const url = new URL(req.url, "http://local");
-  const isControlPath = url.pathname.startsWith("/__cloudspace");
-  if (!isApiPath(url.pathname) && !isControlPath && wantsHtml(req)) {
+  if (isBrowserNavigation(req, url)) {
     redirect(res, `/__lock/login?next=${encodeURIComponent(req.url || "/")}`);
   } else {
     sendJson(res, 401, { error: "locked" });
