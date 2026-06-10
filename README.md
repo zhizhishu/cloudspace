@@ -68,7 +68,8 @@ ghcr.io/zhizhishu/cloudspace:latest
 | `HTTP_META_PORT` | `9876` |
 | `HTTP_META_FOLDER` | `/opt/app/http-meta/meta` |
 | `HTTP_META_TEMP_FOLDER` | `/tmp/http-meta` |
-| `HTTP_META_NODE_MAX_OLD_SPACE_SIZE` | `128` |
+| `HTTP_META_BODY_JSON_LIMIT` | `32mb` |
+| `HTTP_META_NODE_MAX_OLD_SPACE_SIZE` | `256` |
 | `HTTP_META_RESTART_ENABLED` | `true` |
 | `HTTP_META_RESTART_DELAY_SECONDS` | `5` |
 | `CURL_CONNECT_TIMEOUT` | `10` |
@@ -117,6 +118,7 @@ Hugging Face Spaces can still hang on very large subscription import/export, con
 - The gateway only buffers up to `ACCESS_LOCK_MAX_FRONTEND_TRANSFORM_BYTES` while branding frontend HTML/JS; larger frontend assets pass through without transformation to avoid memory spikes.
 - Transformed frontend responses and API responses default to `Cache-Control: no-store` to avoid stale frontend/backend config and browser cache growth.
 - The bundled core, access gateway, and HTTP META helper start with separate Node heap caps.
+- HTTP META accepts larger internal JSON payloads through `HTTP_META_BODY_JSON_LIMIT`, default `32mb`, so large node lists are not rejected by the helper's default `1mb` body parser.
 - Supabase restore/backup curl calls use connection/total timeouts and skip state exports above `SUPABASE_BACKUP_MAX_BYTES`.
 - A background cache cleanup loop trims safe cache paths only: HTTP META temp, `/tmp/cloudspace-cache`, and `cache`/`tmp`/`logs` under `CLOUDSPACE_DATA_BASE_PATH`. It refuses to clean arbitrary paths.
 
