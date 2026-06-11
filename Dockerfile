@@ -1,7 +1,7 @@
 FROM node:20-alpine AS fetcher
 
 ARG HTTP_META_VERSION=1.1.0
-ARG MIHOMO_VERSION=v1.19.25
+ARG MIHOMO_VERSION=v1.19.27
 
 RUN apk add --no-cache ca-certificates curl unzip
 
@@ -28,6 +28,7 @@ RUN mkdir -p /opt/app/http-meta/meta \
         "https://github.com/MetaCubeX/mihomo/releases/download/${MIHOMO_VERSION}/mihomo-linux-amd64-compatible-${MIHOMO_VERSION}.gz" \
     && gunzip -c /tmp/mihomo.gz > /opt/app/http-meta/meta/http-meta \
     && chmod +x /opt/app/http-meta/meta/http-meta \
+    && /opt/app/http-meta/meta/http-meta -v \
     && rm -f /tmp/mihomo.gz
 
 FROM node:20-alpine
