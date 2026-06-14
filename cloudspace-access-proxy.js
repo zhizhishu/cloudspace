@@ -981,18 +981,40 @@ function frontendBootstrapScript() {
       }
     };
     document.addEventListener("DOMContentLoaded", () => brandNode(document.body || document.documentElement));
+    // Throttled, incremental branding: batch newly added subtrees and brand them when idle,
+    // instead of re-walking the whole document on a 250ms timer (that froze the UI on large
+    // pages, e.g. subscriptions with thousands of nodes, making buttons feel unclickable).
+    let brandQueue = [];
+    let brandScheduled = false;
+    const scheduleIdle = window.requestIdleCallback
+      ? (fn) => window.requestIdleCallback(fn, { timeout: 500 })
+      : (fn) => setTimeout(fn, 50);
+    const flushBrandQueue = () => {
+      brandScheduled = false;
+      const roots = brandQueue;
+      brandQueue = [];
+      for (const root of roots) {
+        try { brandNode(root); } catch (_) {}
+      }
+    };
+    const scheduleBrand = (root) => {
+      if (root) brandQueue.push(root);
+      if (brandScheduled) return;
+      brandScheduled = true;
+      scheduleIdle(flushBrandQueue);
+    };
     new MutationObserver((mutations) => {
       for (const mutation of mutations) {
-        for (const node of mutation.addedNodes) brandNode(node);
-        if (mutation.type === "characterData") brandNode(mutation.target);
+        for (const node of mutation.addedNodes) scheduleBrand(node);
+        if (mutation.type === "characterData") scheduleBrand(mutation.target);
       }
     }).observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+    // Keep the same-origin backend config pinned; no longer re-walk the whole DOM here.
     setInterval(() => {
       if (shouldRewriteHostAPI(localStorage.getItem("hostAPI")) || localStorage.getItem("backendConfigured") !== "true" || localStorage.getItem("magicPathConfigured") !== "true") {
         syncCloudspaceBackend();
       }
-      brandNode(document.body || document.documentElement);
-    }, 250);
+    }, 1000);
     document.title = ${JSON.stringify(productName)};
   } catch (_) {}
 })();
