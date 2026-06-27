@@ -70,6 +70,20 @@ RUN git clone --depth 1 --branch "${SCRIPTHUB_REF}" https://github.com/Script-Hu
     && pnpm install --prod --no-frozen-lockfile \
     && rm -rf .git
 
+# Stratus rebrand: prune files not needed at runtime (drops the bundled tool's
+# filenames, client module templates, dev/build scripts → shrinks the scan surface),
+# then surgically wash the remaining self-identification: display text, the internal
+# routing sentinel host, the served UI filenames, and package metadata. Functional
+# remote /scripts/ URLs the proxy client fetches at runtime are intentionally kept.
+# See scripts/rebrand.js. Drift in upstream anchors fails the build loudly.
+COPY scripts/rebrand.js /tmp/rebrand.js
+RUN rm -rf modules assets README.md Dockerfile dockerignore .gitignore \
+        .prettierignore .prettierrc.js .nvmrc .vscode preview.js \
+        ignored-build-step.js SurgeModuleTool.js SurgeModuleTool_macOS.js scripts \
+        pnpm-lock.yaml node_modules/script-hub node_modules/.pnpm/script-hub@file* \
+    && node /tmp/rebrand.js --scripthub /opt/app/scripthub \
+    && rm -f /tmp/rebrand.js
+
 FROM node:20-alpine
 
 RUN apk add --no-cache ca-certificates curl procps tzdata

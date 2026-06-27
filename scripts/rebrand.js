@@ -33,6 +33,8 @@ const path = require("path");
 
 const PRODUCT = "CloudSpace"; // user-visible product name (unchanged)
 const CORE_CODENAME = "cumulus"; // 底核 internal codename (logger prefix)
+const SCRIPT_CODENAME = "stratus"; // Script-Hub internal codename (logs / sentinel host)
+const SCRIPT_SENTINEL_HOST = "stratus.local"; // replaces the internal magic host script.hub
 
 /* ---- core bundle rules: surgical, literal, anchored. Order: specific first. ---- */
 const CORE_RULES = [
@@ -143,23 +145,148 @@ function rebrandFrontend(frontendDir) {
   return total;
 }
 
+/* ===================== Script-Hub (codename: Stratus) =====================
+ * Script-Hub is cloned at build time and bundled to run internally behind the
+ * CloudSpace gateway. Like the core, only USER/SCAN-visible self-identification is
+ * washed; the internal request-routing host "script.hub" is renamed to a neutral
+ * sentinel (stratus.local) — it is purely internal (service.js synthesizes it and
+ * rewrites it to the real base URL in output; clients never send it), so renaming it
+ * coordinated across service.js + scriptMap + all served scripts is transparent and
+ * drives `grep script.hub` to zero. The served UI files script-hub*.js are renamed to
+ * stratus*.js and the scriptMap keys updated to match.
+ *
+ * RESIDUAL (intentionally kept — functional remote dependency): the rewrite parsers
+ * embed raw.githubusercontent.com/Script-Hub-Org/Script-Hub/main/scripts/*.js URLs
+ * into generated client modules; those are fetched from GitHub by the proxy client at
+ * runtime, so they must keep pointing at the upstream repo.
+ */
+const SCRIPT_TEXT_EXT = new Set([".js", ".json", ".html", ".txt", ".vue", ".mjs", ".cjs"]);
+
+const SCRIPT_RULES = [
+  // ---- display self-identification: blanket "Script Hub" (title/h1/footer/notify
+  // titles/console logs/error bodies/JS_NAME) -> product. Disjoint from the hyphenated
+  // "Script-Hub" in the functional remote /scripts/ URLs, which are kept. ----
+  { find: "Script Hub", repl: PRODUCT, what: "display name 'Script Hub'" },
+  { find: "const NAME = `script-hub`", repl: "const NAME = `" + SCRIPT_CODENAME + "`", what: "app NAME (console/log)" },
+  // ---- package metadata (washed post-install; node_modules already resolved) ----
+  { find: '"name": "script-hub"', repl: '"name": "' + SCRIPT_CODENAME + '"', what: "package.json name" },
+  { find: '"script-hub": "file:"', repl: '"' + SCRIPT_CODENAME + '": "file:"', what: "package.json self-dep" },
+  // ---- upstream repo identity in DISPLAY links + favicon (functional /scripts/ raw URLs are NOT touched) ----
+  { find: "https://github.com/Script-Hub-Org/Script-Hub", repl: "https://github.com/zhizhishu/cloudspace", what: "github display links + wiki" },
+  { find: "raw.githubusercontent.com/Script-Hub-Org/Script-Hub/main/assets", repl: "raw.githubusercontent.com/zhizhishu/cloudspace/main/assets", what: "favicon asset URLs" },
+  // ---- misc visible strings ----
+  { find: "script-hub/1.0.0", repl: "cloudspace/1.0.0", what: "default User-Agent" },
+  { find: "ScriptHub通知", repl: "Stratus通知", what: "notification pref key (self-contained)" },
+  // ---- internal routing sentinel host: regex-escaped form FIRST, then plain (disjoint bytes) ----
+  { find: "script\\.hub", repl: SCRIPT_SENTINEL_HOST.replace(".", "\\."), what: "magic host (regex form)" },
+  { find: "script.hub", repl: SCRIPT_SENTINEL_HOST, what: "magic host (plain form)" },
+  // ---- scriptMap file keys (kept in sync with the file rename below) ----
+  { find: "'./script-hub.beta.js'", repl: "'./" + SCRIPT_CODENAME + ".beta.js'", what: "scriptMap key (beta)" },
+  { find: "'./script-hub.js'", repl: "'./" + SCRIPT_CODENAME + ".js'", what: "scriptMap key" },
+];
+
+// served UI files renamed on disk to match the scriptMap key rewrite above
+const SCRIPT_FILE_RENAMES = [
+  { from: "script-hub.beta.js", to: SCRIPT_CODENAME + ".beta.js" },
+  { from: "script-hub.js", to: SCRIPT_CODENAME + ".js" },
+];
+
+// files that must still exist (and be requireable) after the rebrand — startup smoke
+const SCRIPT_REQUIRED = [
+  "service.js",
+  "scriptMap.js",
+  SCRIPT_CODENAME + ".js",
+  SCRIPT_CODENAME + ".beta.js",
+  "Rewrite-Parser.js",
+  "Rewrite-Parser.beta.js",
+  "rule-parser.js",
+  "rule-parser.beta.js",
+  "script-converter.js",
+  "script-converter.beta.js",
+];
+
+// installed deps / VCS must never be rewritten or scanned (slow + could match a rule
+// inside an unrelated dependency). Only our own first-party scripthub files are washed.
+const SCRIPT_SKIP_DIR = /[\\/](node_modules|\.git|\.pnpm)[\\/]/;
+
+function rebrandScripthub(dir) {
+  console.log("[rebrand] scripthub (Stratus): " + dir);
+  const files = walk(dir, []).filter(f => !SCRIPT_SKIP_DIR.test(f));
+  const ruleTotals = new Map(SCRIPT_RULES.map(r => [r.what, 0]));
+  let touched = 0;
+  for (const f of files) {
+    const ext = path.extname(f).toLowerCase();
+    if (!SCRIPT_TEXT_EXT.has(ext)) continue;
+    let s = fs.readFileSync(f, "utf8");
+    let fileChanged = false;
+    for (const rule of SCRIPT_RULES) {
+      const n = countOccurrences(s, rule.find);
+      if (n > 0) {
+        s = s.split(rule.find).join(rule.repl);
+        ruleTotals.set(rule.what, ruleTotals.get(rule.what) + n);
+        fileChanged = true;
+      }
+    }
+    if (fileChanged) {
+      fs.writeFileSync(f, s);
+      touched++;
+    }
+  }
+  // drift: a rule whose anchor was found nowhere AND whose replacement is also absent
+  // everywhere means upstream changed shape -> fail loudly.
+  const drift = [];
+  const allText = walk(dir, [])
+    .filter(f => !SCRIPT_SKIP_DIR.test(f) && SCRIPT_TEXT_EXT.has(path.extname(f).toLowerCase()))
+    .map(f => fs.readFileSync(f, "utf8"))
+    .join("\n");
+  for (const rule of SCRIPT_RULES) {
+    if (ruleTotals.get(rule.what) === 0 && countOccurrences(allText, rule.repl) === 0) {
+      drift.push(rule.what + "  (anchor: " + rule.find + ")");
+      console.log("  [DRIFT] " + rule.what + ": anchor NOT FOUND and not already rebranded");
+    } else {
+      console.log("  [ok]   " + rule.what + ": " + ruleTotals.get(rule.what) + " replaced");
+    }
+  }
+  // rename served UI files on disk to match scriptMap key rewrite
+  for (const r of SCRIPT_FILE_RENAMES) {
+    const from = path.join(dir, r.from);
+    const to = path.join(dir, r.to);
+    if (fs.existsSync(from)) {
+      fs.renameSync(from, to);
+      console.log("  [rename] " + r.from + " -> " + r.to);
+    } else if (!fs.existsSync(to)) {
+      drift.push("file rename source missing: " + r.from);
+      console.log("  [DRIFT] expected served file not found: " + r.from);
+    }
+  }
+  // assert required runtime files survived
+  const missing = SCRIPT_REQUIRED.filter(n => !fs.existsSync(path.join(dir, n)));
+  // residual transparency
+  const residualName = countOccurrences(allText, "script-hub") + countOccurrences(allText, "Script Hub") + countOccurrences(allText, "ScriptHub");
+  const residualHost = countOccurrences(allText, "script.hub");
+  console.log("  scripthub: touched " + touched + " files; residual name-forms=" + residualName + " (functional remote /scripts/ URLs), residual host 'script.hub'=" + residualHost);
+  return { drift, missing };
+}
+
 function parseArgs(argv) {
   const out = {};
   for (let i = 2; i < argv.length; i++) {
     if (argv[i] === "--core") out.core = argv[++i];
     else if (argv[i] === "--frontend") out.frontend = argv[++i];
+    else if (argv[i] === "--scripthub") out.scripthub = argv[++i];
   }
   return out;
 }
 
 function main() {
   const args = parseArgs(process.argv);
-  if (!args.core && !args.frontend) {
-    console.error("usage: node rebrand.js --core <core-bundle.js> --frontend <frontend-dir>");
+  if (!args.core && !args.frontend && !args.scripthub) {
+    console.error("usage: node rebrand.js [--core <core-bundle.js>] [--frontend <frontend-dir>] [--scripthub <scripthub-dir>]");
     process.exit(2);
   }
   let drift = [];
   let lost = [];
+  let missing = [];
   if (args.core) {
     if (!fs.existsSync(args.core)) {
       console.error("[FATAL] core bundle not found: " + args.core);
@@ -175,6 +302,19 @@ function main() {
       process.exit(1);
     }
     rebrandFrontend(args.frontend);
+  }
+  if (args.scripthub) {
+    if (!fs.existsSync(args.scripthub)) {
+      console.error("[FATAL] scripthub dir not found: " + args.scripthub);
+      process.exit(1);
+    }
+    const r = rebrandScripthub(args.scripthub);
+    drift = drift.concat(r.drift);
+    missing = missing.concat(r.missing);
+  }
+  if (missing.length) {
+    console.error("[FATAL] scripthub rebrand left required runtime file(s) missing: " + missing.join(", "));
+    process.exit(1);
   }
   if (lost.length) {
     console.error("[FATAL] rebrand removed functional identifier(s); aborting build.");

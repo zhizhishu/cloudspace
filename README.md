@@ -29,7 +29,7 @@ ghcr.io/zhizhishu/cloudspace:latest
 - Container listen host: the CloudSpace access gateway listens on `0.0.0.0`; the internal core listens on `127.0.0.1`.
 - Access lock: enabled by default. The first start generates an initial password if `ACCESS_LOCK_INITIAL_PASSWORD` is not set, then stores a hashed config in `/opt/app/data/cloudspace-access.json`. After login, open `/__lock` to change the password.
 - HTTP META: enabled by default on internal `127.0.0.1:9876` for Node.js script operations.
-- Script-Hub (full-server version): enabled by default on internal `127.0.0.1:9100` (stable) and `127.0.0.1:9101` (beta). It is reached from outside through an encrypted public path prefix on the same `7860` gateway, so proxy clients without the access cookie can still fetch scripts/subscriptions. See `## Script-Hub Full-Server Version` below.
+- Stratus (full-server version): enabled by default on internal `127.0.0.1:9100` (stable) and `127.0.0.1:9101` (beta). It is reached from outside through an encrypted public path prefix on the same `7860` gateway, so proxy clients without the access cookie can still fetch scripts/subscriptions. See `## Stratus Full-Server Version` below.
 
 ## Environment Variables
 
@@ -118,7 +118,7 @@ ghcr.io/zhizhishu/cloudspace:latest
 | `SCRIPTHUB_BETA_PUBLIC_PATH` | `/shb-k7Qm2xV9Lp4ZrW8t` (encrypted public prefix for beta) |
 | `SCRIPTHUB_BASE_URL` | `https://echocq-cloudspace.hf.space$SCRIPTHUB_PUBLIC_PATH` |
 | `SCRIPTHUB_BETA_BASE_URL` | `https://echocq-cloudspace.hf.space$SCRIPTHUB_BETA_PUBLIC_PATH` |
-| `SCRIPTHUB_MAX_CONCURRENT` | `16` (gateway concurrency cap for the Script-Hub lane; `0` = unlimited) |
+| `SCRIPTHUB_MAX_CONCURRENT` | `16` (gateway concurrency cap for the Stratus lane; `0` = unlimited) |
 | `SCRIPTHUB_NODE_MAX_OLD_SPACE_SIZE` | `1024` |
 | `SCRIPTHUB_START_DELAY_SECONDS` | `2` |
 | `SCRIPTHUB_RESTART_ENABLED` | `true` |
@@ -141,21 +141,21 @@ CloudSpace stays one app behind one password. Users enter the access password on
 
 HTTP META remains internal on `127.0.0.1:9876`; it is checked by health and restarted by the startup supervisor if the helper exits.
 
-## Script-Hub Full-Server Version
+## Stratus Full-Server Version
 
-CloudSpace bundles the [Script-Hub](https://github.com/Script-Hub-Org/Script-Hub) full-server version (the "全服务器版" build) as an additional internal service so it coexists with the bundled Cumulus core in the same container and behind the same `7860` gateway.
+CloudSpace bundles **Stratus**, a full-server script / rule-set conversion toolkit, as an additional internal service so it coexists with the bundled Cumulus core in the same container and behind the same `7860` gateway.
 
-- The Script-Hub process is a single `node service.js` that listens on `127.0.0.1:9100` (stable) and `127.0.0.1:9101` (beta) at the same time. It is fetched and `pnpm install --prod` is run at image build time in a dedicated build stage, then copied into the runtime image at `/opt/app/scripthub`.
-- Script-Hub keeps no server-side user data: a generated script/subscription link encodes everything it needs, and its `./tmp` working directory (symlinked to `/tmp/scripthub-tmp`) only holds transient cache. So no Supabase backup is required for Script-Hub, and a container rebuild does not lose any Script-Hub configuration.
-- Because proxy clients (Surge / Loon / Stash / Clash, mobile apps, etc.) cannot send the CloudSpace access cookie, Script-Hub is exposed through an **encrypted public path prefix** instead of the password lock. The gateway matches that prefix *before* the access lock, strips it, and forwards the request to the internal Script-Hub port. Everything else stays locked.
+- The Stratus process is a single `node service.js` that listens on `127.0.0.1:9100` (stable) and `127.0.0.1:9101` (beta) at the same time. It is fetched and `pnpm install --prod` is run at image build time in a dedicated build stage, then copied into the runtime image at `/opt/app/scripthub`.
+- Stratus keeps no server-side user data: a generated script/subscription link encodes everything it needs, and its `./tmp` working directory (symlinked to `/tmp/scripthub-tmp`) only holds transient cache. So no Supabase backup is required for Stratus, and a container rebuild does not lose any Stratus configuration.
+- Because proxy clients (Surge / Loon / Stash / Clash, mobile apps, etc.) cannot send the CloudSpace access cookie, Stratus is exposed through an **encrypted public path prefix** instead of the password lock. The gateway matches that prefix *before* the access lock, strips it, and forwards the request to the internal Stratus port. Everything else stays locked.
   - Stable: `https://<your-space>/sh-k7Qm2xV9Lp4ZrW8t/...` → internal `127.0.0.1:9100`.
   - Beta: `https://<your-space>/shb-k7Qm2xV9Lp4ZrW8t/...` → internal `127.0.0.1:9101`.
-- The security of this lane is the unguessable prefix (the same model Script-Hub recommends: a complex URL behind a reverse proxy). **For real deployments, override `SCRIPTHUB_PUBLIC_PATH` / `SCRIPTHUB_BETA_PUBLIC_PATH` with your own long random values via Hugging Face Space Variables**, and set `SCRIPTHUB_BASE_URL` / `SCRIPTHUB_BETA_BASE_URL` to the matching public URL so generated links point at the right prefix. A near-miss path such as `/sh-...EVIL` is *not* routed to Script-Hub; it falls back to the access lock.
-- Because the repository ships a built-in default prefix, the gateway logs a prominent `[SCRIPTHUB][SECURITY]` warning at startup whenever the default prefix is still in use, to remind you to override it. The prefix must be treated like a password: if you do not override it, anyone who can read the repository can reach this code-executing service without the password.
-- Since Script-Hub executes script code, the gateway also caps the Script-Hub lane at `SCRIPTHUB_MAX_CONCURRENT` concurrent requests (default `16`, `0` to disable) as defense-in-depth, returning `429` when exceeded.
-- `SCRIPTHUB_ENABLED=false` disables the whole Script-Hub service and its routes; `SCRIPTHUB_BETA_ENABLED=false` disables only the beta lane. If Script-Hub fails to start, the container keeps running normally — the Cumulus core is never blocked by Script-Hub.
-- Health: `/__cloudspace/health` reports a `scriptHub` section (reachability of each lane). Script-Hub status is informational and does not flip the overall `ok` flag, since it is a testing-stage component.
-- Logged-in CloudSpace config (`/__cloudspace/config.json`) lists the active Script-Hub routes and base URLs for convenience.
+- The security of this lane is the unguessable prefix (the same model Stratus recommends: a complex URL behind a reverse proxy). **For real deployments, override `SCRIPTHUB_PUBLIC_PATH` / `SCRIPTHUB_BETA_PUBLIC_PATH` with your own long random values via Hugging Face Space Variables**, and set `SCRIPTHUB_BASE_URL` / `SCRIPTHUB_BETA_BASE_URL` to the matching public URL so generated links point at the right prefix. A near-miss path such as `/sh-...EVIL` is *not* routed to Stratus; it falls back to the access lock.
+- Because the repository ships a built-in default prefix, the gateway logs a prominent `[stratus][SECURITY]` warning at startup whenever the default prefix is still in use, to remind you to override it. The prefix must be treated like a password: if you do not override it, anyone who can read the repository can reach this code-executing service without the password.
+- Since Stratus executes script code, the gateway also caps the Stratus lane at `SCRIPTHUB_MAX_CONCURRENT` concurrent requests (default `16`, `0` to disable) as defense-in-depth, returning `429` when exceeded.
+- `SCRIPTHUB_ENABLED=false` disables the whole Stratus service and its routes; `SCRIPTHUB_BETA_ENABLED=false` disables only the beta lane. If Stratus fails to start, the container keeps running normally — the Cumulus core is never blocked by Stratus.
+- Health: `/__cloudspace/health` reports a `stratus` section (reachability of each lane). Stratus status is informational and does not flip the overall `ok` flag, since it is a testing-stage component.
+- Logged-in CloudSpace config (`/__cloudspace/config.json`) lists the active Stratus routes and base URLs for convenience.
 
 ## Subscription Stall Guards
 

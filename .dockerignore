@@ -13,6 +13,7 @@ README.md
 .artifacts/
 .codex-runtime/
 _archive/
+archive/
 TASK_LOG.md
 LOCAL_ACCESS_PASSWORD.txt
 .zhongzhuan-backup.json

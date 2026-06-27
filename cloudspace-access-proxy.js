@@ -49,8 +49,8 @@ const httpMetaPort = Number(process.env.HTTP_META_PORT || 9876);
 const healthTimeoutMs = positiveNumber(process.env.CLOUDSPACE_HEALTH_TIMEOUT_MS, 2500);
 const healthCacheMs = positiveNumber(process.env.CLOUDSPACE_HEALTH_CACHE_MS, 10000);
 
-// Script-Hub 全服务器版: 作为同容器内的独立 Koa 服务并存于 CloudSpace 网关之后。
-// 因为代理客户端(Surge/Loon/Clash 等)无法携带访问锁 cookie, Script-Hub 通过一条
+// Stratus 全服务器版: 作为同容器内的独立 Koa 服务并存于 CloudSpace 网关之后。
+// 因为代理客户端(Surge/Loon/Clash 等)无法携带访问锁 cookie, Stratus 通过一条
 // 加密公开路径放行(类似已发布订阅 /download), 安全性来自难以猜测的长前缀。
 const scriptHubEnabled = process.env.SCRIPTHUB_ENABLED !== "false";
 const scriptHubHost = process.env.SCRIPTHUB_HOST || "127.0.0.1";
@@ -63,7 +63,7 @@ const scriptHubBaseUrl = process.env.SCRIPTHUB_BASE_URL || "";
 const scriptHubBetaBaseUrl = process.env.SCRIPTHUB_BETA_BASE_URL || "";
 const scriptHubTimeoutMs = positiveNumber(process.env.SCRIPTHUB_UPSTREAM_TIMEOUT_MS, upstreamTimeoutMs);
 const scriptHubMaxBodyBytes = positiveNumber(process.env.SCRIPTHUB_MAX_BODY_BYTES, 16 * 1024 * 1024);
-// Script-Hub 会执行脚本代码, 给放行通道加并发上限做纵深防御(0=不限)。
+// Stratus 会执行脚本代码, 给放行通道加并发上限做纵深防御(0=不限)。
 const scriptHubMaxConcurrent = positiveNumber(process.env.SCRIPTHUB_MAX_CONCURRENT, 16);
 // 内置默认前缀(公开仓库可见); 仍在用默认值时启动期会发安全告警。
 const scriptHubDefaultPath = "/sh-k7Qm2xV9Lp4ZrW8t";
@@ -887,7 +887,7 @@ function cloudspaceConfig() {
       maxBodyBytes: jobMaxBodyBytes,
       resultMaxBytes: jobResultMaxBytes
     },
-    scriptHub: {
+    stratus: {
       enabled: scriptHubEnabled,
       betaEnabled: scriptHubBetaEnabled,
       routes: scriptHubTargets.map((t) => ({
@@ -980,7 +980,7 @@ async function buildHealth() {
       upstream: `${httpMetaHost}:${httpMetaPort}`,
       probe: httpMeta
     },
-    scriptHub: {
+    stratus: {
       ok: scriptHub.ok,
       enabled: scriptHubEnabled,
       betaEnabled: scriptHubBetaEnabled,
@@ -1336,7 +1336,7 @@ function scriptHubHeaders(headers) {
   for (const name of ["connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade"]) {
     delete out[name];
   }
-  // 保留原始 Host, 让 Script-Hub 在未设置 BASE_URL 时也能拼出正确的对外链接。
+  // 保留原始 Host, 让 Stratus 在未设置 BASE_URL 时也能拼出正确的对外链接。
   return out;
 }
 
@@ -1344,7 +1344,7 @@ function proxyScriptHub(req, res, target) {
   if (scriptHubMaxConcurrent > 0 && activeScriptHubRequests >= scriptHubMaxConcurrent) {
     sendJson(res, 429, {
       error: "busy",
-      message: "Script-Hub is processing too many requests; retry shortly.",
+      message: "Stratus is processing too many requests; retry shortly.",
       active: activeScriptHubRequests,
       maxConcurrent: scriptHubMaxConcurrent
     });
@@ -1373,7 +1373,7 @@ function proxyScriptHub(req, res, target) {
     upstreamRes.pipe(res);
   });
   upstreamReq.setTimeout(scriptHubTimeoutMs, () => {
-    upstreamReq.destroy(new Error(`Script-Hub upstream timeout after ${scriptHubTimeoutMs} ms`));
+    upstreamReq.destroy(new Error(`Stratus upstream timeout after ${scriptHubTimeoutMs} ms`));
   });
   upstreamReq.on("error", (error) => {
     release();
@@ -1384,7 +1384,7 @@ function proxyScriptHub(req, res, target) {
     // 通用文案, 不回显内部 error.message。
     const status = error.message.includes("timeout") ? 504 : 502;
     res.writeHead(status, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
-    res.end(status === 504 ? "Script-Hub timed out\n" : "Script-Hub temporarily unavailable\n");
+    res.end(status === 504 ? "Stratus timed out\n" : "Stratus temporarily unavailable\n");
   });
 
   let bodyBytes = 0;
@@ -1422,7 +1422,7 @@ const server = http.createServer((req, res) => {
   if (enabled && handleLockRoute(req, res)) return;
   if (protectCloudspaceRoute(req, res)) return;
   if (handleCloudspaceRoute(req, res)) return;
-  // Script-Hub 加密路径在访问锁之前放行, 让代理客户端无 cookie 也能拉取脚本/订阅。
+  // Stratus 加密路径在访问锁之前放行, 让代理客户端无 cookie 也能拉取脚本/订阅。
   if (handleScriptHubRoute(req, res)) return;
   if (handleCoverRoute(req, res)) return;
   if (enabled && !isAuthenticated(req)) {
@@ -1459,12 +1459,12 @@ server.listen(listenPort, "0.0.0.0", () => {
   console.log(`[CLOUDSPACE ACCESS] ${enabled ? "enabled" : "disabled"} on 0.0.0.0:${listenPort}, upstream ${upstreamHost}:${upstreamPort}`);
   console.log(`[CLOUDSPACE ACCESS] upstream timeout ${upstreamTimeoutMs} ms, request timeout ${requestTimeoutMs} ms`);
   if (scriptHubTargets.length) {
-    console.log(`[SCRIPTHUB] lanes: ${scriptHubTargets.map((t) => `${t.label} ${t.prefix} -> ${scriptHubHost}:${t.port}`).join(", ")} (max concurrent ${scriptHubMaxConcurrent || "unlimited"})`);
+    console.log(`[stratus] lanes: ${scriptHubTargets.map((t) => `${t.label} ${t.prefix} -> ${scriptHubHost}:${t.port}`).join(", ")} (max concurrent ${scriptHubMaxConcurrent || "unlimited"})`);
     const usingDefaultPrefix =
       scriptHubPath === scriptHubDefaultPath ||
       (scriptHubBetaEnabled && scriptHubBetaPath === scriptHubDefaultBetaPath);
     if (usingDefaultPrefix) {
-      console.warn("[SCRIPTHUB][SECURITY] Script-Hub is still using a built-in default public path that is visible in the public repository. Anyone who knows it can reach this code-executing service WITHOUT the access password. Override SCRIPTHUB_PUBLIC_PATH / SCRIPTHUB_BETA_PUBLIC_PATH (and SCRIPTHUB_BASE_URL / SCRIPTHUB_BETA_BASE_URL) with your own long random values via Hugging Face Space Variables before relying on it.");
+      console.warn("[stratus][SECURITY] Stratus is still using a built-in default public path that is visible in the public repository. Anyone who knows it can reach this code-executing service WITHOUT the access password. Override SCRIPTHUB_PUBLIC_PATH / SCRIPTHUB_BETA_PUBLIC_PATH (and SCRIPTHUB_BASE_URL / SCRIPTHUB_BETA_BASE_URL) with your own long random values via Hugging Face Space Variables before relying on it.");
     }
   }
 });

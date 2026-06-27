@@ -414,11 +414,11 @@ scripthub_supervisor() {
     trap - INT TERM
 
     if [ "${SCRIPTHUB_RESTART_ENABLED:-true}" != "true" ]; then
-      echo "Script-Hub exited with status ${status}; restart disabled"
+      echo "Stratus exited with status ${status}; restart disabled"
       return "$status"
     fi
 
-    echo "Script-Hub exited with status ${status}; restarting in ${SCRIPTHUB_RESTART_DELAY_SECONDS:-5}s" >&2
+    echo "Stratus exited with status ${status}; restarting in ${SCRIPTHUB_RESTART_DELAY_SECONDS:-5}s" >&2
     sleep "${SCRIPTHUB_RESTART_DELAY_SECONDS:-5}"
   done
 }
@@ -428,11 +428,11 @@ start_scripthub() {
 
   scripthub_dir="${SCRIPTHUB_DIR:-/opt/app/scripthub}"
   if [ ! -f "${scripthub_dir}/service.js" ]; then
-    echo "Script-Hub service.js not found in ${scripthub_dir}; skipping Script-Hub" >&2
+    echo "Stratus service.js not found in ${scripthub_dir}; skipping Stratus" >&2
     return 0
   fi
 
-  # 把 Script-Hub 的 ./tmp 工作目录指向 /tmp, 避免污染应用目录且便于清理。
+  # 把 Stratus 的 ./tmp 工作目录指向 /tmp, 避免污染应用目录且便于清理。
   mkdir -p /tmp/scripthub-tmp
   ln -sfn /tmp/scripthub-tmp "${scripthub_dir}/tmp" 2>/dev/null || true
 
@@ -441,12 +441,12 @@ start_scripthub() {
   sleep "${SCRIPTHUB_START_DELAY_SECONDS:-2}"
 
   if ! kill -0 "$SCRIPTHUB_PID" 2>/dev/null; then
-    echo "Script-Hub failed to start; continuing without it" >&2
+    echo "Stratus failed to start; continuing without it" >&2
     SCRIPTHUB_PID=""
     return 0
   fi
 
-  echo "Script-Hub listening on ${SCRIPTHUB_HOST:-127.0.0.1}:${SCRIPTHUB_PORT:-9100} (beta ${SCRIPTHUB_BETA_PORT:-9101})"
+  echo "Stratus listening on ${SCRIPTHUB_HOST:-127.0.0.1}:${SCRIPTHUB_PORT:-9100} (beta ${SCRIPTHUB_BETA_PORT:-9101})"
 }
 
 start_cloudspace_core() {
