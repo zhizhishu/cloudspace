@@ -47,6 +47,7 @@ const BRAND_RULES = [
   [/clash[.\-_ ]?meta/gi, "cirrus"],
   [/\bmihomo\b/gi, "cirrus"],
   [/http[\-_ ]?meta/gi, "cirrus"],
+  [/\[META\b/g, "[Cirrus"], // http-meta wrapper bracket tags: [META FOLDER], [META] STARTED, ...
   [/\bsub[\-_ ]?store\b/gi, "CloudSpace"], // residual net; rebrand handles the bundle
   [/\bscript[\-_ ]?hub\b/gi, "Stratus"],
   [/script\.hub/gi, "stratus.local"],
@@ -97,6 +98,9 @@ const UUID_RE = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\
 // the key and the separator so dumped config objects are covered too.
 const SECRET_KV_RE =
   /\b(token|password|passwd|pwd|secret|psk|uuid|public[\-_ ]?key|private[\-_ ]?key|api[\-_ ]?key|apikey|service[\-_ ]?role[\-_ ]?key|authorization|auth|obfs[\-_ ]?password|age-secret-key)\b("?\s*[:=]\s*)("?)([^\s",'`]+)/gi;
+// Stratus script-lane secret path prefixes (/sh-<token>, /shb-<token>): they gate the
+// script lanes ahead of the access lock, so they must not sit in a possibly-public log.
+const LANE_PATH_RE = /\/shb?-[A-Za-z0-9_-]{6,}/g;
 
 function redactUrl(line) {
   return line.replace(URL_RE, (url) => {
@@ -133,6 +137,10 @@ function redactSecrets(line) {
   return out;
 }
 
+function redactLanePaths(line) {
+  return line.replace(LANE_PATH_RE, "[redacted-path]");
+}
+
 function sanitize(line) {
   let out = line;
   if (BRAND_ENABLED) {
@@ -144,6 +152,7 @@ function sanitize(line) {
     out = redactIPv4(out);
     out = redactIPv6(out);
     out = redactSecrets(out);
+    out = redactLanePaths(out);
   }
   return out;
 }

@@ -875,7 +875,7 @@ function cloudspaceConfig() {
       api: "/api",
       jobs: cloudspaceJobsPath
     },
-    httpMeta: {
+    cirrus: {
       enabled: httpMetaEnabled,
       host: "127.0.0.1",
       port: httpMetaPort
@@ -974,7 +974,7 @@ async function buildHealth() {
       maxBodyBytes: jobMaxBodyBytes,
       resultMaxBytes: jobResultMaxBytes
     },
-    httpMeta: {
+    cirrus: {
       ok: httpMeta.ok,
       enabled: httpMetaEnabled,
       upstream: `${httpMetaHost}:${httpMetaPort}`,
