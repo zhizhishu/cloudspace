@@ -1,6 +1,32 @@
 #!/bin/sh
 set -eu
 
+# ---- runtime log sanitizer ----
+# Route this script's stdout/stderr AND every child engine's (subscription core,
+# Cirrus proxy engine / http-meta wrapper, Stratus script lane — they all inherit
+# these fds) through cloudspace-log-filter.js before anything reaches the container
+# log. The filter neutralizes upstream brand identity and redacts subscription /
+# node data (URLs, public IPs, credentials). Disable with
+# CLOUDSPACE_LOG_FILTER_ENABLED=false. Fail-open: any setup error -> logs unfiltered
+# but the service still starts.
+CLOUDSPACE_LOG_FILTER="${CLOUDSPACE_LOG_FILTER:-/opt/app/cloudspace-log-filter.js}"
+if [ "${CLOUDSPACE_LOG_FILTER_ENABLED:-true}" = "true" ] \
+  && [ -z "${CLOUDSPACE_LOG_FILTER_ACTIVE:-}" ] \
+  && [ -f "$CLOUDSPACE_LOG_FILTER" ] \
+  && command -v node >/dev/null 2>&1; then
+  _cs_log_fifo="${TMPDIR:-/tmp}/cloudspace-log.$$.fifo"
+  if mkfifo "$_cs_log_fifo" 2>/dev/null; then
+    export CLOUDSPACE_LOG_FILTER_ACTIVE=1
+    # Reader first: it inherits the REAL stdout and blocks until a writer attaches.
+    node "$CLOUDSPACE_LOG_FILTER" <"$_cs_log_fifo" &
+    CLOUDSPACE_LOG_FILTER_PID="$!"
+    # Now point our stdout+stderr (inherited by all children) at the fifo.
+    exec >"$_cs_log_fifo" 2>&1
+    # fds stay valid after unlink; drop the path so nothing else can find it.
+    rm -f "$_cs_log_fifo"
+  fi
+fi
+
 CLOUDSPACE_PRODUCT_NAME="${CLOUDSPACE_PRODUCT_NAME:-CloudSpace}"
 export ACCESS_LOCK_ENABLED="${ACCESS_LOCK_ENABLED:-true}"
 export ACCESS_LOCK_PORT="${PORT:-${ACCESS_LOCK_PORT:-3000}}"
@@ -107,7 +133,7 @@ cleanup_cache_path() {
   current_kb="${current_kb:-0}"
   if [ "${CLOUDSPACE_CACHE_MAX_KB}" -gt 0 ] 2>/dev/null && [ "$current_kb" -gt "$CLOUDSPACE_CACHE_MAX_KB" ]; then
     if is_http_meta_cache_path "$dir"; then
-      echo "HTTP META cache path $dir is still ${current_kb}KB; keeping active files to avoid dropping HTTP META" >&2
+      echo "Cirrus engine cache path $dir is still ${current_kb}KB; keeping active files to avoid dropping the engine" >&2
     elif [ "$CLOUDSPACE_CACHE_EMERGENCY_PURGE" = "true" ]; then
       echo "Cache path $dir is still ${current_kb}KB; emergency purging cache files"
       find "$dir" -type f -delete 2>/dev/null || true
@@ -370,11 +396,11 @@ http_meta_supervisor() {
     trap - INT TERM
 
     if [ "$HTTP_META_RESTART_ENABLED" != "true" ]; then
-      echo "HTTP META exited with status ${status}; restart disabled"
+      echo "Cirrus engine exited with status ${status}; restart disabled"
       return "$status"
     fi
 
-    echo "HTTP META exited with status ${status}; restarting in ${HTTP_META_RESTART_DELAY_SECONDS}s" >&2
+    echo "Cirrus engine exited with status ${status}; restarting in ${HTTP_META_RESTART_DELAY_SECONDS}s" >&2
     sleep "$HTTP_META_RESTART_DELAY_SECONDS"
   done
 }
@@ -388,11 +414,11 @@ start_http_meta() {
   sleep "${HTTP_META_START_DELAY_SECONDS:-2}"
 
   if ! kill -0 "$HTTP_META_PID" 2>/dev/null; then
-    echo "HTTP META failed to start" >&2
+    echo "Cirrus engine failed to start" >&2
     exit 1
   fi
 
-  echo "HTTP META listening on ${HTTP_META_HOST:-127.0.0.1}:${HTTP_META_PORT:-9876}"
+  echo "Cirrus engine listening on ${HTTP_META_HOST:-127.0.0.1}:${HTTP_META_PORT:-9876}"
 }
 
 scripthub_supervisor() {

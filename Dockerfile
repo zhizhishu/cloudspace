@@ -93,6 +93,10 @@ ENV NODE_ENV=production \
     PORT=7860 \
     CLOUDSPACE_PRODUCT_NAME=CloudSpace \
     SUB_STORE_X_POWERED_BY=CloudSpace \
+    CLOUDSPACE_LOG_FILTER_ENABLED=true \
+    CLOUDSPACE_LOG_FILTER_BRAND=true \
+    CLOUDSPACE_LOG_FILTER_REDACT=true \
+    CLOUDSPACE_LOG_FILTER_SCRUB_CLIENTS=false \
     ACCESS_LOCK_ENABLED=true \
     ACCESS_LOCK_PORT=7860 \
     ACCESS_LOCK_DATA_PATH=/opt/app/data/cloudspace-access.json \
@@ -172,6 +176,7 @@ COPY --from=scripthub /opt/app/scripthub /opt/app/scripthub
 COPY start.sh /usr/local/bin/start-cloudspace
 COPY cloudspace-access-proxy.js /opt/app/cloudspace-access-proxy.js
 COPY cloudspace-state.js /opt/app/cloudspace-state.js
+COPY cloudspace-log-filter.js /opt/app/cloudspace-log-filter.js
 COPY cover /opt/app/cover
 
 RUN chmod +x /usr/local/bin/start-cloudspace \
