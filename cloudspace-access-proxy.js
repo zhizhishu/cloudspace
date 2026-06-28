@@ -962,7 +962,7 @@ async function buildHealth() {
       active: activeApiRequests,
       maxConcurrent: apiMaxConcurrent,
       maxBodyBytes: apiMaxBodyBytes,
-      upstream: `${upstreamHost}:${upstreamPort}${backendPath}`,
+      upstream: `${upstreamHost}:${upstreamPort}`,
       probe: core
     },
     jobs: {
@@ -986,7 +986,7 @@ async function buildHealth() {
       betaEnabled: scriptHubBetaEnabled,
       active: activeScriptHubRequests,
       maxConcurrent: scriptHubMaxConcurrent,
-      routes: scriptHubTargets.map((t) => ({ label: t.label, path: t.prefix, upstream: `${scriptHubHost}:${t.port}` })),
+      routes: scriptHubTargets.map((t) => ({ label: t.label, upstream: `${scriptHubHost}:${t.port}` })),
       probe: scriptHub
     }
   };
