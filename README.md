@@ -114,10 +114,10 @@ ghcr.io/zhizhishu/cloudspace:latest
 | `SCRIPTHUB_PORT` | `9100` (internal stable) |
 | `SCRIPTHUB_BETA_ENABLED` | `true` |
 | `SCRIPTHUB_BETA_PORT` | `9101` (internal beta) |
-| `SCRIPTHUB_PUBLIC_PATH` | `/sh-k7Qm2xV9Lp4ZrW8t` (encrypted public prefix for stable) |
-| `SCRIPTHUB_BETA_PUBLIC_PATH` | `/shb-k7Qm2xV9Lp4ZrW8t` (encrypted public prefix for beta) |
-| `SCRIPTHUB_BASE_URL` | `https://echocq-cloudspace.hf.space$SCRIPTHUB_PUBLIC_PATH` |
-| `SCRIPTHUB_BETA_BASE_URL` | `https://echocq-cloudspace.hf.space$SCRIPTHUB_BETA_PUBLIC_PATH` |
+| `SCRIPTHUB_PUBLIC_PATH` | `/sh-REPLACE_ME` (encrypted public prefix for stable) |
+| `SCRIPTHUB_BETA_PUBLIC_PATH` | `/shb-REPLACE_ME` (encrypted public prefix for beta) |
+| `SCRIPTHUB_BASE_URL` | `https://your-account-cloudspace.hf.space$SCRIPTHUB_PUBLIC_PATH` |
+| `SCRIPTHUB_BETA_BASE_URL` | `https://your-account-cloudspace.hf.space$SCRIPTHUB_BETA_PUBLIC_PATH` |
 | `SCRIPTHUB_MAX_CONCURRENT` | `16` (gateway concurrency cap for the Stratus lane; `0` = unlimited) |
 | `SCRIPTHUB_NODE_MAX_OLD_SPACE_SIZE` | `1024` |
 | `SCRIPTHUB_START_DELAY_SECONDS` | `2` |
@@ -148,8 +148,8 @@ CloudSpace bundles **Stratus**, a full-server script / rule-set conversion toolk
 - The Stratus process is a single `node service.js` that listens on `127.0.0.1:9100` (stable) and `127.0.0.1:9101` (beta) at the same time. It is fetched and `pnpm install --prod` is run at image build time in a dedicated build stage, then copied into the runtime image at `/opt/app/scripthub`.
 - Stratus keeps no server-side user data: a generated script/subscription link encodes everything it needs, and its `./tmp` working directory (symlinked to `/tmp/scripthub-tmp`) only holds transient cache. So no Supabase backup is required for Stratus, and a container rebuild does not lose any Stratus configuration.
 - Because proxy clients (Surge / Loon / Stash / Clash, mobile apps, etc.) cannot send the CloudSpace access cookie, Stratus is exposed through an **encrypted public path prefix** instead of the password lock. The gateway matches that prefix *before* the access lock, strips it, and forwards the request to the internal Stratus port. Everything else stays locked.
-  - Stable: `https://<your-space>/sh-k7Qm2xV9Lp4ZrW8t/...` → internal `127.0.0.1:9100`.
-  - Beta: `https://<your-space>/shb-k7Qm2xV9Lp4ZrW8t/...` → internal `127.0.0.1:9101`.
+  - Stable: `https://<your-space>/sh-REPLACE_ME/...` → internal `127.0.0.1:9100`.
+  - Beta: `https://<your-space>/shb-REPLACE_ME/...` → internal `127.0.0.1:9101`.
 - The security of this lane is the unguessable prefix (the same model Stratus recommends: a complex URL behind a reverse proxy). **For real deployments, override `SCRIPTHUB_PUBLIC_PATH` / `SCRIPTHUB_BETA_PUBLIC_PATH` with your own long random values via Hugging Face Space Variables**, and set `SCRIPTHUB_BASE_URL` / `SCRIPTHUB_BETA_BASE_URL` to the matching public URL so generated links point at the right prefix. A near-miss path such as `/sh-...EVIL` is *not* routed to Stratus; it falls back to the access lock.
 - Because the repository ships a built-in default prefix, the gateway logs a prominent `[stratus][SECURITY]` warning at startup whenever the default prefix is still in use, to remind you to override it. The prefix must be treated like a password: if you do not override it, anyone who can read the repository can reach this code-executing service without the password.
 - Since Stratus executes script code, the gateway also caps the Stratus lane at `SCRIPTHUB_MAX_CONCURRENT` concurrent requests (default `16`, `0` to disable) as defense-in-depth, returning `429` when exceeded.
@@ -287,4 +287,4 @@ app_port: 7860
 
 Keep the same Supabase environment variables in Space secrets if you want CloudSpace server-side state to restore after restarts. Free Spaces have more memory than the current Northflank free container, but their default runtime disk is still ephemeral.
 
-When updating the Space manually, make sure the target is `Echocq/cloudspace`. Older local remotes or browser tabs may still point at previous test Spaces and should not be reused for deployment.
+When updating the Space manually, make sure the target is `your-account/cloudspace`. Older local remotes or browser tabs may still point at previous test Spaces and should not be reused for deployment.

@@ -2,8 +2,8 @@
 param(
   [string]$GitHubRepo = "zhizhishu/cloudspace",
   [string]$Image = "ghcr.io/zhizhishu/cloudspace",
-  [string]$HuggingFaceSpace = "Echocq/cloudspace",
-  [string]$AppUrl = "https://echocq-cloudspace.hf.space",
+  [string]$HuggingFaceSpace = "your-account/cloudspace",
+  [string]$AppUrl = "https://your-account-cloudspace.hf.space",
   [string]$WorkflowFile = "publish-image.yml",
   [string]$ExpectedCommitSha,
   [switch]$Json

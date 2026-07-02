@@ -57,8 +57,8 @@ const scriptHubHost = process.env.SCRIPTHUB_HOST || "127.0.0.1";
 const scriptHubPort = Number(process.env.SCRIPTHUB_PORT || 9100);
 const scriptHubBetaEnabled = process.env.SCRIPTHUB_BETA_ENABLED !== "false";
 const scriptHubBetaPort = Number(process.env.SCRIPTHUB_BETA_PORT || 9101);
-const scriptHubPath = normalizeBackendPath(process.env.SCRIPTHUB_PUBLIC_PATH || "/sh-k7Qm2xV9Lp4ZrW8t");
-const scriptHubBetaPath = normalizeBackendPath(process.env.SCRIPTHUB_BETA_PUBLIC_PATH || "/shb-k7Qm2xV9Lp4ZrW8t");
+const scriptHubPath = normalizeBackendPath(process.env.SCRIPTHUB_PUBLIC_PATH || "/sh-REPLACE_ME");
+const scriptHubBetaPath = normalizeBackendPath(process.env.SCRIPTHUB_BETA_PUBLIC_PATH || "/shb-REPLACE_ME");
 const scriptHubBaseUrl = process.env.SCRIPTHUB_BASE_URL || "";
 const scriptHubBetaBaseUrl = process.env.SCRIPTHUB_BETA_BASE_URL || "";
 const scriptHubTimeoutMs = positiveNumber(process.env.SCRIPTHUB_UPSTREAM_TIMEOUT_MS, upstreamTimeoutMs);
@@ -66,8 +66,8 @@ const scriptHubMaxBodyBytes = positiveNumber(process.env.SCRIPTHUB_MAX_BODY_BYTE
 // Stratus 会执行脚本代码, 给放行通道加并发上限做纵深防御(0=不限)。
 const scriptHubMaxConcurrent = positiveNumber(process.env.SCRIPTHUB_MAX_CONCURRENT, 16);
 // 内置默认前缀(公开仓库可见); 仍在用默认值时启动期会发安全告警。
-const scriptHubDefaultPath = "/sh-k7Qm2xV9Lp4ZrW8t";
-const scriptHubDefaultBetaPath = "/shb-k7Qm2xV9Lp4ZrW8t";
+const scriptHubDefaultPath = "/sh-REPLACE_ME";
+const scriptHubDefaultBetaPath = "/shb-REPLACE_ME";
 const scriptHubTargets = [];
 if (scriptHubEnabled && scriptHubPath) {
   scriptHubTargets.push({ prefix: scriptHubPath, port: scriptHubPort, label: "stable", baseUrl: scriptHubBaseUrl });
