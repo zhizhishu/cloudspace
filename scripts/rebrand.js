@@ -48,7 +48,12 @@ const CORE_RULES = [
   // download filename prefixes: sub-store_data_ / _subscription_ / _collection_ / _file_
   { find: "sub-store_", repl: "cloudspace_", what: "download filename prefixes" },
   // internal logger name + its log-line parser regex (pair) -> [cumulus]
-  { find: 'new Q1("sub-store")', repl: 'new Q1("' + CORE_CODENAME + '")', what: "logger name" },
+  // Anchor on the stable string literal, NOT the minified logger-class variable:
+  // upstream re-minifies every release (was `new Q1(...)`, now `new em(...)`), so a
+  // var-name anchor drifts on each bump. The quoted "sub-store" appears exactly once
+  // (the logger construction `new <var>("sub-store")`), so `("sub-store")` uniquely and
+  // stably targets it regardless of the surrounding minified name.
+  { find: '("sub-store")', repl: '("' + CORE_CODENAME + '")', what: "logger name" },
   { find: "\\[sub-store\\]", repl: "\\[" + CORE_CODENAME + "\\]", what: "log parser regex" },
   // gist error/notify/log LABELS only ("找不到 Sub-Store Gist" etc.) — NOT a matching key
   // (the gist is matched by wl/G1 below, which we keep). Washing this hides it from logs.
@@ -61,7 +66,11 @@ const CORE_RULES = [
 // Functional identifiers that MUST survive rebrand (confirmed by usage analysis).
 // Asserted present after rewrite; their loss fails the build.
 const CORE_KEEP = [
-  'G1="Sub-Store"', // gist artifact storage KEY: load(G1) / {[G1]:{content}}
+  // gist artifact storage KEY assignment `<var>="Sub-Store"` (used as load(KEY) /
+  // {[KEY]:{content}}). Anchor on `="Sub-Store"` not the minified const name — it was
+  // G1, is now Y1, and re-minifies each release; `="Sub-Store"` uniquely matches this
+  // assignment (the other capitalized "Sub-Store" uses are `||"..."` / `:"..."` / labels).
+  '="Sub-Store"',
   "Sub-Store Artifacts Repository", // gist sync identity (locate existing gist)
   "Auto Generated Sub-Store Backup", // gist backup desc
   'Platform:"Sub-Store"', // script-visible platform field (community-script compat)
