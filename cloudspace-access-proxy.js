@@ -49,6 +49,24 @@ const httpMetaPort = Number(process.env.HTTP_META_PORT || 9876);
 const healthTimeoutMs = positiveNumber(process.env.CLOUDSPACE_HEALTH_TIMEOUT_MS, 2500);
 const healthCacheMs = positiveNumber(process.env.CLOUDSPACE_HEALTH_CACHE_MS, 10000);
 
+// Sub-path mount support. When the gateway is reverse-proxied behind another app at
+// a prefix (e.g. claw forwards /cloud/* here WITHOUT stripping it), set
+// CLOUDSPACE_MOUNT_PREFIX=/cloud. Incoming request URLs are normalized (prefix stripped)
+// once at the top of the server so ALL internal routing/upstream logic stays root-relative
+// and unchanged; every browser-facing absolute URL the gateway emits (redirects, the lock
+// page form actions, and the frontend hostAPI base) is re-prefixed with it. The frontend's
+// STATIC asset paths (/index.js, /chunks/, /css/, /fonts/, /images/) are handled separately
+// at build time (scripts/frontend-subpath.js) because CSS/large-JS bodies are not transformed
+// here. Empty (default) = mounted at root, fully backward compatible.
+const mountPrefix = normalizeMountPrefix(process.env.CLOUDSPACE_MOUNT_PREFIX);
+// Pre-login ocean/stone cover (石头海浪 Three.js unlock). The 690KB bundle + login.html
+// hard-code root-absolute /cover/ and /__lock/ paths; under a sub-path mount those are
+// rewritten to <mountPrefix>/... at serve time (renderCover / handleCoverRoute below), so
+// the cover works both at root and under /cloud. The gateway serves these bodies itself, so
+// unlike the proxied front-end (build-time frontend-subpath.js) no build step is needed.
+// Set CLOUDSPACE_COVER_ENABLED=false to force the plain (inline-styled) lock screen instead.
+const coverEnabled = process.env.CLOUDSPACE_COVER_ENABLED !== "false";
+
 // Stratus 全服务器版: 作为同容器内的独立 Koa 服务并存于 CloudSpace 网关之后。
 // 因为代理客户端(Surge/Loon/Clash 等)无法携带访问锁 cookie, Stratus 通过一条
 // 加密公开路径放行(类似已发布订阅 /download), 安全性来自难以猜测的长前缀。
@@ -97,6 +115,32 @@ function normalizeBackendPath(value) {
   const trimmed = String(value || "").trim();
   if (!trimmed || trimmed === "/") return "";
   return `/${trimmed.replace(/^\/+|\/+$/g, "")}`;
+}
+
+// Sub-path mount prefix: leading slash, no trailing slash (e.g. "/cloud"). Empty = root.
+function normalizeMountPrefix(value) {
+  let p = String(value || "").trim();
+  if (!p || p === "/") return "";
+  if (!p.startsWith("/")) p = `/${p}`;
+  return p.replace(/\/+$/, "");
+}
+
+// Prefix a root-relative location/path with the mount prefix (no-op when unmounted).
+function withMountPrefix(location) {
+  if (!mountPrefix) return location;
+  if (typeof location !== "string" || !location.startsWith("/")) return location;
+  return `${mountPrefix}${location}`;
+}
+
+// Strip the mount prefix off an incoming request URL so all downstream routing/upstream
+// logic operates on a root-relative path. Returns the normalized URL.
+function stripMountPrefix(rawUrl) {
+  if (!mountPrefix) return rawUrl;
+  const u = rawUrl || "/";
+  if (u === mountPrefix) return "/";
+  if (u.startsWith(`${mountPrefix}/`)) return u.slice(mountPrefix.length);
+  if (u.startsWith(`${mountPrefix}?`)) return `/${u.slice(mountPrefix.length)}`;
+  return u; // not under the prefix (shouldn't happen via the front proxy) — leave as-is
 }
 
 function randomPassword() {
@@ -237,6 +281,7 @@ function escapeHtml(value) {
 
 function htmlPage(req, message = "") {
   const loggedIn = isAuthenticated(req);
+  const base = mountPrefix; // browser-facing form actions/links live under the mount prefix
   const next = new URL(req.url, "http://local").searchParams.get("next") || "/";
   const safeNext = next.startsWith("/") && !next.startsWith("//") ? next : "/";
   return `<!doctype html>
@@ -268,11 +313,11 @@ function htmlPage(req, message = "") {
     ${loggedIn ? `
       <p>Access is unlocked. You can open ${escapeHtml(productName)} or change the access password here.</p>
       <div class="row">
-        <a class="button" href="/">Open ${escapeHtml(productName)}</a>
-        <form method="post" action="/__lock/logout"><button class="secondary" type="submit">Sign out</button></form>
+        <a class="button" href="${base}/">Open ${escapeHtml(productName)}</a>
+        <form method="post" action="${base}/__lock/logout"><button class="secondary" type="submit">Sign out</button></form>
       </div>
       <hr>
-      <form method="post" action="/__lock/password">
+      <form method="post" action="${base}/__lock/password">
         <label>Current password<input name="currentPassword" type="password" autocomplete="current-password" required></label>
         <label>New password<input name="newPassword" type="password" autocomplete="new-password" minlength="8" required></label>
         <label>Confirm new password<input name="confirmPassword" type="password" autocomplete="new-password" minlength="8" required></label>
@@ -280,7 +325,7 @@ function htmlPage(req, message = "") {
       </form>
     ` : `
       <p>Enter the access password to continue.</p>
-      <form method="post" action="/__lock/login">
+      <form method="post" action="${base}/__lock/login">
         <input type="hidden" name="next" value="${escapeHtml(safeNext)}">
         <label>Access password<input name="password" type="password" autocomplete="current-password" autofocus required></label>
         <button type="submit">Unlock</button>
@@ -315,13 +360,39 @@ const COVER_MIME = {
   ".svg": "image/svg+xml"
 };
 let coverTemplateCache = null;
+// Load login.html once, rewriting its root-absolute paths for the sub-path mount: the cover
+// bundle <script src="/cover/..."> and the password form action="/__lock/login" both live
+// under the mount prefix that claw forwards here (mirrors htmlPage's `base = mountPrefix`).
+// The hidden `next` value stays root-relative (the POST handler re-prefixes it via
+// withMountPrefix). No-op at root. Drift-detecting: a login.html that drops these anchors
+// warns loudly so an upstream cover change is caught instead of shipping a white screen.
+function loadCoverTemplate() {
+  if (coverTemplateCache != null) return coverTemplateCache;
+  let tpl = fs.readFileSync(path.join(COVER_DIR, "login.html"), "utf8");
+  if (mountPrefix) {
+    const hadCoverSrc = tpl.includes('src="/cover/');
+    const hadLockAction = tpl.includes('action="/__lock/');
+    tpl = tpl
+      .split('src="/cover/').join(`src="${mountPrefix}/cover/`)
+      .split('action="/__lock/').join(`action="${mountPrefix}/__lock/`);
+    if (!hadCoverSrc || !hadLockAction) {
+      console.warn(
+        `[CLOUDSPACE ACCESS] cover login.html sub-path anchors missing ` +
+        `(bundle src=${hadCoverSrc}, lock form action=${hadLockAction}); the ocean cover may ` +
+        `break under the "${mountPrefix}" mount — re-check cover/login.html paths.`
+      );
+    }
+  }
+  coverTemplateCache = tpl;
+  return coverTemplateCache;
+}
 // Returns the templated cover login HTML, or null if the cover assets are absent
 // (so callers can fall back to the plain htmlPage lock screen).
 function renderCover(message, next) {
+  if (!coverEnabled) return null;
   let tpl;
   try {
-    if (coverTemplateCache == null) coverTemplateCache = fs.readFileSync(path.join(COVER_DIR, "login.html"), "utf8");
-    tpl = coverTemplateCache;
+    tpl = loadCoverTemplate();
   } catch (_) {
     return null;
   }
@@ -329,6 +400,33 @@ function renderCover(message, next) {
   return tpl
     .split("__CLOUDSPACE_NEXT__").join(escapeHtml(safeNext))
     .split("__CLOUDSPACE_MESSAGE__").join(escapeHtml(message || ""));
+}
+// The cover bundle hard-codes a single root-absolute ASSET_BASE ("/cover/assets") from which
+// every 3D asset URL (glb / waternormals / draco / basis) is derived. Under a sub-path mount
+// rewrite it to "<mountPrefix>/cover/assets" so those fetches resolve through the prefix claw
+// forwards here; cached after first read. It is the only text asset needing this — glb/jpg/
+// wasm are binary and served byte-for-byte. Drift-detecting: a missing anchor warns loudly.
+let coverBundleCache = null;
+function readCoverBundle(file, cb) {
+  if (coverBundleCache) { cb(null, coverBundleCache); return; }
+  fs.readFile(file, (err, buf) => {
+    if (err) { cb(err); return; }
+    let out = buf;
+    if (mountPrefix) {
+      const src = buf.toString("utf8");
+      const anchor = "/cover/assets";
+      if (src.includes(anchor)) {
+        out = Buffer.from(src.split(anchor).join(`${mountPrefix}${anchor}`), "utf8");
+      } else {
+        console.warn(
+          `[CLOUDSPACE ACCESS] cover.bundle.js ASSET_BASE anchor "${anchor}" not found; ` +
+          `the ocean cover's 3D assets may 404 under the "${mountPrefix}" mount — re-check cover.src.js.`
+        );
+      }
+    }
+    coverBundleCache = out;
+    cb(null, out);
+  });
 }
 // Serve /cover/* publicly: the bundle + assets are fetched before the visitor is
 // authenticated. login.html is NEVER served here — it only goes out templated via
@@ -342,7 +440,7 @@ function handleCoverRoute(req, res) {
   if (!rel || rel.includes("\0") || rel.endsWith("login.html")) { res.writeHead(404); res.end(); return true; }
   const file = path.normalize(path.join(COVER_DIR, rel));
   if (file !== COVER_DIR && !file.startsWith(COVER_DIR + path.sep)) { res.writeHead(403); res.end(); return true; }
-  fs.readFile(file, (err, buf) => {
+  const send = (err, buf) => {
     if (err) { res.writeHead(404); res.end(); return; }
     res.writeHead(200, {
       "content-type": COVER_MIME[path.extname(file).toLowerCase()] || "application/octet-stream",
@@ -350,7 +448,10 @@ function handleCoverRoute(req, res) {
     });
     if (req.method === "HEAD") { res.end(); return; }
     res.end(buf);
-  });
+  };
+  // cover.bundle.js needs the sub-path ASSET_BASE rewrite; everything else is served as-is.
+  if (path.basename(file) === "cover.bundle.js") readCoverBundle(file, send);
+  else fs.readFile(file, send);
   return true;
 }
 
@@ -690,7 +791,7 @@ function handleJobsRoute(req, res, url) {
 }
 
 function redirect(res, location) {
-  res.writeHead(303, { location, "cache-control": "no-store" });
+  res.writeHead(303, { location: withMountPrefix(location), "cache-control": "no-store" });
   res.end();
 }
 
@@ -860,20 +961,26 @@ function cloudspaceConfig() {
   return {
     productName,
     backend: {
-      apiBase: "/",
+      // Browser-facing API base. Under a sub-path mount this is "<mountPrefix>/" so any
+      // consumer that derives an API base from it targets "<mountPrefix>/api" (which the front
+      // proxy forwards back here), not the site root. (The Sub-Store front-end itself pins its
+      // axios baseURL via localStorage.hostAPI — see frontendBootstrapScript + the build-time
+      // hostAPI pin in scripts/frontend-subpath.js — this keeps the self-describing config
+      // accurate for any other consumer under the mount.)
+      apiBase: withMountPrefix("/"),
       sameOrigin: true
     },
     access: {
       model: "one-password-same-origin",
-      login: "/__lock/login",
-      password: "/__lock"
+      login: withMountPrefix("/__lock/login"),
+      password: withMountPrefix("/__lock")
     },
     routes: {
-      lock: "/__lock",
-      health: cloudspaceHealthPath,
-      config: cloudspaceConfigPath,
-      api: "/api",
-      jobs: cloudspaceJobsPath
+      lock: withMountPrefix("/__lock"),
+      health: withMountPrefix(cloudspaceHealthPath),
+      config: withMountPrefix(cloudspaceConfigPath),
+      api: withMountPrefix("/api"),
+      jobs: withMountPrefix(cloudspaceJobsPath)
     },
     cirrus: {
       enabled: httpMetaEnabled,
@@ -1016,18 +1123,30 @@ function handleCloudspaceRoute(req, res) {
 
 function frontendBootstrapScript() {
   const apiName = `${productName} Local`;
+  // Same-origin backend base. Under a sub-path mount this is "${mountPrefix}/" so the
+  // frontend (which sets axios baseURL = api.url with the trailing slash stripped, then
+  // combines it with leading-slash paths like "/api/subs") issues requests to
+  // "${mountPrefix}/api/..." — which the front proxy forwards back here.
+  const hostApiUrl = mountPrefix ? `${mountPrefix}/` : "/";
+  // 上游名以 base64 承载，避免明文真名出现在对外注入脚本里（查看页面源码只见编码串，不见真名）。
+  const enc = (s) => Buffer.from(s, "utf8").toString("base64");
+  const brandPairs = [
+    [enc("Sub Store"), productName],
+    [enc("Sub-Store"), productName],
+    [enc("SubStore"), productName],
+    [enc("sub-store"), "cloudspace"],
+    [enc("sub.store"), "cloudspace.local"]
+  ];
+  const subDotStoreEnc = enc("sub.store");
   return `<script>
 (() => {
   try {
-    const desiredHostAPI = { current: ${JSON.stringify(apiName)}, apis: [{ name: ${JSON.stringify(apiName)}, url: "/" }] };
+    const desiredHostAPI = { current: ${JSON.stringify(apiName)}, apis: [{ name: ${JSON.stringify(apiName)}, url: ${JSON.stringify(hostApiUrl)} }] };
     const desiredHostAPIValue = JSON.stringify(desiredHostAPI);
     const cloudspaceName = ${JSON.stringify(productName)};
-    const brandValue = (value) => String(value || "")
-      .replaceAll("Sub Store", cloudspaceName)
-      .replaceAll("Sub-Store", cloudspaceName)
-      .replaceAll("SubStore", cloudspaceName)
-      .replaceAll("sub-store", "cloudspace")
-      .replaceAll("sub.store", "cloudspace.local");
+    const __dec = (b) => { try { return decodeURIComponent(escape(atob(b))); } catch (_) { try { return atob(b); } catch (__) { return ""; } } };
+    const __bp = ${JSON.stringify(brandPairs)};
+    const brandValue = (value) => { let s = String(value || ""); for (const p of __bp) { const from = __dec(p[0]); if (from) s = s.split(from).join(p[1]); } return s; };
     const syncCloudspaceBackend = () => {
       Storage.prototype.setItem.call(localStorage, "hostAPI", desiredHostAPIValue);
       Storage.prototype.setItem.call(localStorage, "backendConfigured", "true");
@@ -1037,7 +1156,7 @@ function frontendBootstrapScript() {
       try {
         const parsed = JSON.parse(value || "{}");
         if (!parsed.current || !Array.isArray(parsed.apis) || parsed.apis.length === 0) return true;
-        return JSON.stringify(parsed).includes("sub.store");
+        return JSON.stringify(parsed).includes(__dec(${JSON.stringify(subDotStoreEnc)}));
       } catch (_) {
         return true;
       }
@@ -1168,6 +1287,13 @@ function applyCacheHeaders(headers, cacheControl) {
 
 function responseHeaders(req, upstreamRes, options = {}) {
   const headers = { ...upstreamRes.headers };
+  // Strip upstream engine identity headers (Server / X-Powered-By) so an
+  // engine's own fingerprint never leaks past the brand-defense layer,
+  // whatever the key casing the upstream used.
+  for (const key of Object.keys(headers)) {
+    const lower = key.toLowerCase();
+    if (lower === "x-powered-by" || lower === "server") delete headers[key];
+  }
   if (options.dropContentLength) delete headers["content-length"];
   if (options.frontend) applyCacheHeaders(headers, frontendCacheControl);
   if (isApiPath(req.url)) applyCacheHeaders(headers, apiCacheControl);
@@ -1419,6 +1545,10 @@ function handleScriptHubRoute(req, res) {
 ensureJobStore();
 
 const server = http.createServer((req, res) => {
+  // Normalize the sub-path mount once: strip the prefix so every handler below sees a
+  // root-relative URL. Outbound absolute URLs (redirects, lock form actions, hostAPI base)
+  // are re-prefixed via withMountPrefix / the templates. No-op when unmounted.
+  req.url = stripMountPrefix(req.url);
   if (enabled && handleLockRoute(req, res)) return;
   if (protectCloudspaceRoute(req, res)) return;
   if (handleCloudspaceRoute(req, res)) return;
@@ -1437,6 +1567,7 @@ const server = http.createServer((req, res) => {
 });
 
 server.on("upgrade", (req, socket, head) => {
+  req.url = stripMountPrefix(req.url); // same sub-path normalization as HTTP requests
   if (enabled && !isAuthenticated(req)) {
     socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
     socket.destroy();

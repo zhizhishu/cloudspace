@@ -27,6 +27,10 @@ RUN node /opt/app/scripts/rebrand.js \
       --core /opt/app/cloudspace-core.bundle.js \
       --frontend /opt/app/frontend
 
+ARG CLOUDSPACE_MOUNT_SUBPATH=
+COPY scripts/frontend-subpath.js /opt/app/scripts/frontend-subpath.js
+RUN node /opt/app/scripts/frontend-subpath.js --frontend /opt/app/frontend --prefix "${CLOUDSPACE_MOUNT_SUBPATH}"
+
 RUN mkdir -p /opt/app/http-meta/meta \
     && curl -fsSL -o /opt/app/http-meta/http-meta.bundle.js \
         "https://github.com/xream/http-meta/releases/download/${HTTP_META_VERSION}/http-meta.bundle.js" \
@@ -182,7 +186,7 @@ COPY cover /opt/app/cover
 RUN chmod +x /usr/local/bin/start-cloudspace \
     && chmod +x /opt/app/http-meta/meta/http-meta \
     && /opt/app/http-meta/meta/http-meta -v \
-    && rm -f /opt/app/cover/cover.src.js /opt/app/cover/build.mjs /opt/app/cover/README-INTEGRATION.md /opt/app/scripts/rebrand.js \
+    && rm -f /opt/app/cover/cover.src.js /opt/app/cover/build.mjs /opt/app/cover/README-INTEGRATION.md /opt/app/scripts/rebrand.js /opt/app/scripts/frontend-subpath.js \
     && addgroup -S cloudspace \
     && adduser -S -G cloudspace cloudspace \
     && chown -R cloudspace:cloudspace /opt/app

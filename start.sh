@@ -55,6 +55,7 @@ export HTTP_META_BODY_JSON_LIMIT="${HTTP_META_BODY_JSON_LIMIT:-256mb}"
 export HTTP_META_NODE_MAX_OLD_SPACE_SIZE="${HTTP_META_NODE_MAX_OLD_SPACE_SIZE:-8192}"
 export CURL_CONNECT_TIMEOUT="${CURL_CONNECT_TIMEOUT:-10}"
 export CURL_MAX_TIME="${CURL_MAX_TIME:-180}"
+export SUPABASE_STORAGE_BUCKET="${SUPABASE_STORAGE_BUCKET:-cloudspace}"
 export SUPABASE_BACKUP_MAX_BYTES="${SUPABASE_BACKUP_MAX_BYTES:-16777216}"
 export SUPABASE_BACKUP_REQUIRE_VALID_STORAGE="${SUPABASE_BACKUP_REQUIRE_VALID_STORAGE:-true}"
 export SUPABASE_RESTORE_REQUIRE_VALID_STORAGE="${SUPABASE_RESTORE_REQUIRE_VALID_STORAGE:-true}"
@@ -235,10 +236,13 @@ ensure_supabase_bucket() {
 }
 
 wait_for_cloudspace_core() {
-  timeout="${CLOUDSPACE_BACKUP_WAIT_SECONDS:-60}"
+  timeout="${CLOUDSPACE_BACKUP_WAIT_SECONDS:-600}"
   i=0
   while [ "$i" -lt "$timeout" ]; do
-    if curl -fsS --connect-timeout 2 --max-time 5 "${CLOUDSPACE_INTERNAL_API_BASE}/api/utils/env" >/dev/null 2>&1; then
+    # 真凶是 curl 的 -f：core 的 /api/utils/env 直连返回非 2xx(需认证，故经网关带登录态是 200、裸 curl 是 401)，
+    # -fsS 把非 2xx 判成"没就绪"、干等到 600s 超时；这个 wait 一卡又连累网关晚起、restore 被跳过。
+    # 实证：core 秒起(日志 migrating→listening 一秒内完成)。去掉 -f，只要 core 有任何 HTTP 响应即视为就绪。
+    if curl -s -o /dev/null --connect-timeout 2 --max-time 5 "${CLOUDSPACE_INTERNAL_API_BASE}/api/utils/env" >/dev/null 2>&1; then
       return 0
     fi
     i=$((i + 1))
@@ -353,7 +357,9 @@ backup_to_supabase_once() {
     today="$(date -u +%F)"
     last_daily=""
     [ -f /tmp/cloudspace-supabase-daily.date ] && last_daily="$(cat /tmp/cloudspace-supabase-daily.date)"
-    if [ "$today" != "$last_daily" ] || [ "$uploaded_latest" = "true" ]; then
+    # daily 只在当天第一次备份时写(冻结当天首帧)，之后当天不再覆盖——否则当天若有坏数据备份，
+    # 会把当天的救命快照也顶掉。真正保命的冻结点是跨天的旧 daily。
+    if [ "$today" != "$last_daily" ]; then
       daily_object="$(supabase_daily_object_path)"
       if curl_with_limits \
         -X POST \
@@ -512,6 +518,10 @@ SCRIPTHUB_PID=""
 start_http_meta
 start_cache_cleanup
 start_scripthub
+
+if [ "${SUPABASE_BACKUP_ENABLED:-false}" = "true" ] && [ -z "${SUPABASE_SERVICE_ROLE_KEY:-}" ]; then
+  echo "WARN: cloudspace Supabase 备份已启用 (SUPABASE_BACKUP_ENABLED=true) 但缺 SUPABASE_SERVICE_ROLE_KEY，备份将静默关闭、数据不会落盘" >&2
+fi
 
 if [ "$ACCESS_LOCK_ENABLED" = "true" ] || supabase_backup_enabled; then
   start_cloudspace_core
