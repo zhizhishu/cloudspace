@@ -190,6 +190,31 @@
       .cover-hotspot::after { animation: none; }
       .cover-fade, .js .cover-fade { transition-duration: .01ms; }
     }
+
+    /* ===== 内嵌·跟随水晶的小框密码(替代居中卡片弹窗) ===== */
+    /* 旧居中卡片仍留在 DOM(cover.bundle.js 引用 #cover-panel/#cover-error/#cover-password),但永不显示 */
+    .cover-panel { display: none !important; }
+    .stonebox { position: fixed; z-index: 40; transform: translate(-50%, 0); display: none; flex-direction: column; align-items: center; gap: 7px; opacity: 0; pointer-events: none; }
+    .stonebox.is-open { display: flex; opacity: 1; pointer-events: auto; animation: sbIn .45s cubic-bezier(.14,1,.34,1) both; }
+    .stonebox-kicker { font-size: 8px; font-weight: 700; letter-spacing: .3em; text-transform: uppercase; color: rgba(206,228,255,.82); text-shadow: 0 1px 8px rgba(0,0,0,.7); }
+    .stonebox-row {
+      display: flex; align-items: center; gap: 7px; padding: 6px 6px 6px 15px;
+      background: rgba(9,14,22,.72); backdrop-filter: blur(18px) saturate(150%); -webkit-backdrop-filter: blur(18px) saturate(150%);
+      border: 1px solid rgba(155,184,225,.32); border-radius: 999px;
+      box-shadow: 0 10px 34px rgba(0,0,0,.5), 0 0 30px rgba(155,184,225,.12);
+    }
+    .stonebox-input { width: 148px; background: none; border: none; outline: none; color: var(--fg); font: inherit; font-size: 13px; letter-spacing: .16em; text-align: center; }
+    .stonebox-input::placeholder { color: rgba(206,228,255,.4); letter-spacing: .12em; }
+    .stonebox-key {
+      width: 30px; height: 30px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; border-radius: 50%;
+      border: 1px solid rgba(155,184,225,.42); background: rgba(155,184,225,.12); color: var(--fg); cursor: pointer; transition: background .2s, border-color .2s;
+    }
+    .stonebox-key:hover { background: rgba(155,184,225,.26); border-color: rgba(155,184,225,.85); }
+    .stonebox-key[disabled] { opacity: .5; cursor: default; }
+    .stonebox-err { font-size: 8px; letter-spacing: .16em; text-transform: uppercase; color: rgba(255,157,176,.95); min-height: 9px; text-shadow: 0 1px 8px rgba(0,0,0,.7); }
+    .stonebox.sb-shake { animation: sbShake .45s both; }
+    @keyframes sbIn { from { opacity: 0; transform: translate(-50%, -8px) scale(.94); } to { opacity: 1; transform: translate(-50%, 0) scale(1); } }
+    @keyframes sbShake { 0%,100% { transform: translate(-50%,0); } 20%,60% { transform: translate(calc(-50% - 6px),0); } 40%,80% { transform: translate(calc(-50% + 6px),0); } }
   </style>
 </head>
 <body>
@@ -265,6 +290,87 @@
       </div>
     </div>
   </div>
+
+  <!-- 内嵌·跟随水晶的小框密码(就地揭示,替代上面的居中卡片弹窗) -->
+  <div class="stonebox" id="stonebox" aria-hidden="true">
+    <div class="stonebox-kicker">ENTER CLOUDSPACE</div>
+    <form class="stonebox-row" id="stonebox-form">
+      <input class="stonebox-input" id="stonebox-pw" type="password" autocomplete="current-password" placeholder="Access key" aria-label="访问密码 / Access key" required>
+      <button class="stonebox-key" id="stonebox-submit" type="submit" aria-label="解锁 / Enter">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"></path></svg>
+      </button>
+    </form>
+    <div class="stonebox-err" id="stonebox-err" role="alert"></div>
+  </div>
+
+  <script>
+  (function () {
+    // 内嵌小框跟随水晶(读 #cover-hotspot 每帧投影位置),就地揭示 CloudSpace 访问密码。
+    var sb = document.getElementById('stonebox');
+    var sbForm = document.getElementById('stonebox-form');
+    var sbPw = document.getElementById('stonebox-pw');
+    var sbSubmit = document.getElementById('stonebox-submit');
+    var sbErr = document.getElementById('stonebox-err');
+    var stone = document.getElementById('cover-hotspot');
+    var sbRaf = 0;
+    function followStone() {
+      // #cover-hotspot 的 left/top/height 由 cover.bundle.js 每帧投影到水晶位置 → 小框悬其正下方跟随。
+      if (stone) {
+        var l = parseFloat(stone.style.left), t = parseFloat(stone.style.top), sz = parseFloat(stone.style.height) || 100;
+        if (!isNaN(l) && !isNaN(t)) { sb.style.left = l + 'px'; sb.style.top = (t + sz * 0.5 + 14) + 'px'; }
+      }
+      sbRaf = requestAnimationFrame(followStone);
+    }
+    function openStone() {
+      sb.classList.add('is-open'); sb.setAttribute('aria-hidden', 'false');
+      if (!sbRaf) followStone();
+      setTimeout(function () { try { sbPw.focus(); } catch (e) {} }, 80);
+    }
+    function closeStone() {
+      sb.classList.remove('is-open'); sb.setAttribute('aria-hidden', 'true');
+      if (sbRaf) { cancelAnimationFrame(sbRaf); sbRaf = 0; }
+      if (sbErr) sbErr.textContent = '';
+    }
+    function sbShake(msg) {
+      if (sbErr) sbErr.textContent = msg;
+      sb.classList.remove('sb-shake'); void sb.offsetWidth; sb.classList.add('sb-shake');
+      try { sbPw.value = ''; sbPw.focus(); } catch (e) {}
+    }
+    if (sbForm) sbForm.addEventListener('submit', function (e) {
+      e.preventDefault();
+      if (sbSubmit.disabled) return;
+      sbSubmit.disabled = true; if (sbErr) sbErr.textContent = '';
+      fetch('/cloudspace/__lock/login', {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ password: sbPw.value, next: '/cloudspace/' }), credentials: 'same-origin', redirect: 'manual'
+      }).then(function (r) {
+        if (r.type === 'opaqueredirect' || r.ok) { window.location.href = '/cloudspace/'; return; }
+        sbSubmit.disabled = false; sbShake(r.status === 401 ? 'Wrong key' : ('Failed ' + r.status));
+      }).catch(function () { sbSubmit.disabled = false; sbShake('Network error'); });
+    });
+    // 捕获阶段拦「水晶 / 任意解锁按钮」点击,抢在 cover.bundle.js 的居中弹窗之前接管。
+    document.addEventListener('click', function (e) {
+      if (!e.target.closest) return;
+      if (e.target.closest('#cover-hotspot, [data-cover-open]')) { e.preventDefault(); e.stopPropagation(); openStone(); return; }
+    }, true);
+    // 点小框外的海面 → 关小框(水晶点击已在捕获阶段 stopProp,不会误关刚开的框)。
+    document.addEventListener('click', function (e) {
+      if (sb.classList.contains('is-open') && e.target.closest && !e.target.closest('#stonebox')) closeStone();
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && sb.classList.contains('is-open')) closeStone();
+    });
+    // 网关若注入了错误消息(密码错等),搬进小框自动展开;并清掉旧卡片的,免得打包脚本又弹隐藏卡。
+    var oldErr = document.getElementById('cover-error');
+    if (oldErr) {
+      var m = (oldErr.textContent || '').trim();
+      oldErr.textContent = '';
+      if (m && m.indexOf('__CLOUDSPACE') === -1) {
+        setTimeout(function () { if (sbErr) sbErr.textContent = m; openStone(); }, 900);
+      }
+    }
+  })();
+  </script>
 
   <script src="/cover/cover.bundle.js" defer></script>
 </body>
