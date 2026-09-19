@@ -65,6 +65,13 @@ const CORE_RULES = [
 
 // Functional identifiers that MUST survive rebrand (confirmed by usage analysis).
 // Asserted present after rewrite; their loss fails the build.
+//
+// 2026-09-19 移除 'Platform:"Sub-Store"' 断言：上游已不再以该字面量注入脚本可见的
+// platform 字段。实测 2.37.0 / 2.38.0 / 2.39.0 / 2.39.9 四版 latest bundle 中
+// `Platform:"Sub-Store"` 命中数均为 0，而下方三条始终各命中 1 次。该断言已无保护对象，
+// 保留只会让构建永久 abort —— 只因 GHCR 的 buildx 缓存一直在命中云核下载层才迟迟未爆，
+// 2026-09-19 缓存失效后重下 latest bundle，run 35462096627 即因此挂掉。
+// platform 值上游现由内部常量（minify 后代号 yp）承载，已被下方 `="Sub-Store"` 覆盖。
 const CORE_KEEP = [
   // gist artifact storage KEY assignment `<var>="Sub-Store"` (used as load(KEY) /
   // {[KEY]:{content}}). Anchor on `="Sub-Store"` not the minified const name — it was
@@ -73,7 +80,6 @@ const CORE_KEEP = [
   '="Sub-Store"',
   "Sub-Store Artifacts Repository", // gist sync identity (locate existing gist)
   "Auto Generated Sub-Store Backup", // gist backup desc
-  'Platform:"Sub-Store"', // script-visible platform field (community-script compat)
 ];
 
 function countOccurrences(hay, needle) {
