@@ -925,12 +925,18 @@ function protectCloudspaceRoute(req, res) {
   return true;
 }
 
-function cleanHeaders(headers) {
+function cleanHeaders(headers, pathname) {
   const out = { ...headers };
   for (const name of ["connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade"]) {
     delete out[name];
   }
   out.host = `${upstreamHost}:${upstreamPort}`;
+  // Vite `crossorigin` module scripts send Origin; Sub-Store core then 403s
+  // "CORS origin not allowed". Same-origin assets do not need that header upstream.
+  if (isPublicFrontendAsset(pathname || "")) {
+    delete out.origin;
+    delete out.Origin;
+  }
   return out;
 }
 
@@ -1404,7 +1410,7 @@ function proxyHttp(req, res) {
     port: upstreamPort,
     method: req.method,
     path: upstreamPath(req.url),
-    headers: cleanHeaders(req.headers)
+    headers: cleanHeaders(req.headers, new URL(req.url, "http://local").pathname)
   };
   const upstreamReq = http.request(options, (upstreamRes) => {
     res.on("finish", release);
