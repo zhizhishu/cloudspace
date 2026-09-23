@@ -938,6 +938,18 @@ function isDownloadPath(rawPath) {
   return rawPath === "/download" || rawPath.startsWith("/download/") || rawPath.startsWith("/download?");
 }
 
+// Vite module scripts use `crossorigin` (anonymous CORS) so they omit the access-lock
+// cookie. Locking /index.js and /chunks/*.js behind the cookie whitescreens the SPA
+// even after HTML login succeeded. Static assets have no secrets; HTML + /api stay locked.
+function isPublicFrontendAsset(pathname) {
+  if (!pathname || pathname === "/") return false;
+  if (pathname.startsWith("/api") || pathname.startsWith("/__") || pathname.startsWith("/download")) return false;
+  const base = pathname.split("/").pop() || "";
+  const dot = base.lastIndexOf(".");
+  if (dot < 1) return false;
+  return /^(js|mjs|cjs|css|map|json|webmanifest|svg|ico|png|jpe?g|gif|webp|woff2?|ttf|eot)$/i.test(base.slice(dot + 1));
+}
+
 function upstreamPath(rawPath) {
   if (backendPath && (rawPath === "/api" || rawPath.startsWith("/api/") || rawPath.startsWith("/api?") || isDownloadPath(rawPath))) {
     return `${backendPath}${rawPath}`;
@@ -1557,8 +1569,10 @@ const server = http.createServer((req, res) => {
   if (handleCoverRoute(req, res)) return;
   if (enabled && !isAuthenticated(req)) {
     const pathname = new URL(req.url, "http://local").pathname;
+    const methodOk = ["GET", "HEAD"].includes(req.method);
     // 放行订阅下载 URL: 客户端(Clash 等)无访问锁 cookie 也能拉取已发布的订阅
-    if (!(isDownloadPath(pathname) && ["GET", "HEAD"].includes(req.method))) {
+    // 放行前端静态资源: Vite `crossorigin` 模块脚本不带 cookie, 否则 SPA 白屏
+    if (!methodOk || !(isDownloadPath(pathname) || isPublicFrontendAsset(pathname))) {
       unauthorized(req, res);
       return;
     }
